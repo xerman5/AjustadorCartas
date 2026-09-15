@@ -107,7 +107,23 @@ px_alto = int(round((cm_alto / 2.54) * st.session_state.ppp))
 st.header("📸 2. Configurar Encuadre de Referencia")
 st.write("Sube una imagen de muestra para ajustar qué zona se recortará si la proporción no encaja perfectamente.")
 
+# Inicializar almacenamiento de la imagen de referencia en la sesión
+if "img_ref_cache" not in st.session_state:
+    st.session_state.img_ref_cache = None
+if "nombre_ref_cache" not in st.session_state:
+    st.session_state.nombre_ref_cache = ""
+
 foto_referencia = st.file_uploader("Subir UNA foto de prueba:", type=["jpg", "jpeg", "png"], key="ref_uploader")
+
+# Si el usuario sube un archivo nuevo, lo guardamos en la sesión
+if foto_referencia is not None and foto_referencia.name != st.session_state.nombre_ref_cache:
+    img_abierta = Image.open(foto_referencia)
+    st.session_state.img_ref_cache = ImageOps.exif_transpose(img_abierta)
+    st.session_state.nombre_ref_cache = foto_referencia.name
+# Si el usuario quita la foto, limpiamos la sesión
+elif foto_referencia is None:
+    st.session_state.img_ref_cache = None
+    st.session_state.nombre_ref_cache = ""
 
 # Función de recorte manual basada en el desplazamiento porcentual del usuario
 def recortar_con_offset(img, target_w, target_h, offset_p):
@@ -119,11 +135,10 @@ def recortar_con_offset(img, target_w, target_h, offset_p):
         # Sobra espacio en el ancho (Eje X)
         ancho_requerido = img_h * ratio_destino
         exceso_x = img_w - ancho_requerido
-        # Centro base (0.5) + desplazamiento (-0.5 a 0.5)
         centro_x = 0.5 + (offset_p / 100.0)
-        centro_x = max(0.0, min(1.0, centro_x)) # Forzar límites seguros de 0 a 1
+        centro_x = max(0.0, min(1.0, centro_x))
         
-        izq = exceso_x * (centro_x - (ancho_requerido / (2 * exceso_x) if exceso_x != 0 else 0))
+        izq = exceso_x * centro_x - (ancho_requerido / 2)
         izq = max(0, min(img_w - ancho_requerido, izq))
         box = (izq, 0, izq + ancho_requerido, img_h)
         eje_afectado = "X"
@@ -131,11 +146,10 @@ def recortar_con_offset(img, target_w, target_h, offset_p):
         # Sobra espacio en el alto (Eje Y)
         alto_requerido = img_w / ratio_destino
         exceso_y = img_h - alto_requerido
-        # Centro base (0.5) + desplazamiento (-0.5 a 0.5). Invertimos el signo para comportamiento intuitivo (positivo = arriba)
-        centro_y = 0.5 - (offset_p / 100.0)
+        centro_y = 0.5 - (offset_p / 100.0) # Positivo = subir encuadre
         centro_y = max(0.0, min(1.0, centro_y))
         
-        sup = exceso_y * (centro_y - (alto_requerido / (2 * exceso_y) if exceso_y != 0 else 0))
+        sup = exceso_y * centro_y - (alto_requerido / 2)
         sup = max(0, min(img_h - alto_requerido, sup))
         box = (0, sup, img_w, sup + alto_requerido)
         eje_afectado = "Y"
@@ -144,30 +158,30 @@ def recortar_con_offset(img, target_w, target_h, offset_p):
     img_final = img_recortada.resize((target_w, target_h), Image.Resampling.LANCZOS)
     return img_final, eje_afectado
 
-if foto_referencia is not None:
-    img_ref = Image.open(foto_referencia)
-    img_ref = ImageOps.exif_transpose(img_ref)
+# Si hay una imagen en la memoria de la sesión, procesamos la vista
+if st.session_state.img_ref_cache is not None:
+    img_ref = st.session_state.img_ref_cache
     
     # Renderizar el recorte inicial simulado para saber qué eje se ve afectado
     _, eje = recortar_con_offset(img_ref, px_ancho, px_alto, 0.0)
     
     st.write(f"Proporción de carta detectada. El eje sobrante que sufrirá el recorte es el **Eje {eje}**.")
     
-    # Mostrar deslizador apropiado según el eje excedente
+    # Controladores del slider vinculados directamente a la sesión
     if eje == "X":
         st.session_state.offset_porcentaje = st.slider(
             "Desplazamiento horizontal del encuadre (%):", 
-            min_value=-50.0, max_value=50.0, value=st.session_state.offset_porcentaje, step=0.5,
-            help="Valores negativos mueven hacia la izquierda, positivos hacia la derecha."
+            min_value=-50.0, max_value=50.0, value=float(st.session_state.offset_porcentaje), step=0.5,
+            key="slider_eje_x"
         )
     else:
         st.session_state.offset_porcentaje = st.slider(
             "Desplazamiento vertical del encuadre (%):", 
-            min_value=-50.0, max_value=50.0, value=st.session_state.offset_porcentaje, step=0.5,
-            help="Valores positivos mueven hacia arriba, negativos hacia abajo."
+            min_value=-50.0, max_value=50.0, value=float(st.session_state.offset_porcentaje), step=0.5,
+            key="slider_eje_y"
         )
         
-    # Generar previsualización en tiempo real
+    # Generar previsualización con el offset activo
     img_previa, _ = recortar_con_offset(img_ref, px_ancho, px_alto, st.session_state.offset_porcentaje)
     
     col_v1, col_v2 = st.columns(2)
@@ -175,6 +189,7 @@ if foto_referencia is not None:
         st.image(img_ref, caption="Imagen Original", use_container_width=True)
     with col_v2:
         st.image(img_previa, caption=f"Resultado final en carta ({px_ancho}x{px_alto} px)", use_container_width=True)
+
 
 # ==========================================
 # SECCIÓN 3: PROCESAMIENTO DE LOTES (TANDAS)
