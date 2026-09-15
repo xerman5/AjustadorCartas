@@ -2,28 +2,13 @@ import streamlit as st
 from PIL import Image, ImageOps
 import io
 import zipfile
+import json
+from datetime import datetime
 
-# Configuración estética de la página web
-st.set_page_config(page_title="Procesador Profesional de Cartas", page_icon="🃏", layout="centered")
+# Configuración de la página web
+st.set_page_config(page_title="Maquetador Profesional de Cartas", page_icon="🃏", layout="centered")
 
-# --- TRUCO CSS: ESTIRAR LA ZONA DE ARRASTRE VERTICALMENTE ---
-st.markdown("""
-    <style>
-    /* Estira la zona de arrastre para que sea mucho más grande visualmente */
-    [data-testid="stFileUploaderDropzone"] {
-        padding: 5rem 2rem !important;
-        border-radius: 12px !important;
-    }
-    /* Estiliza los textos internos del uploader */
-    [data-testid="stFileUploaderDropzone"] section {
-        font-size: 18px !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-st.title("🃏 Procesador de Cartas por Lote")
-
-# --- DICCIONARIO DE MEDIDAS (Ancho x Alto en centímetros) ---
+# --- MEDIDAS DE CARTAS (Ancho x Alto en cm) ---
 MEDIDAS_CARTAS = {
     "Estándar (Poker / MTG) - 6.35 x 8.89 cm": (6.35, 8.89),
     "Estándar Europea (Eurogames) - 5.90 x 9.20 cm": (5.90, 9.20),
@@ -33,133 +18,194 @@ MEDIDAS_CARTAS = {
     "Tamaño Bridge - 5.72 x 8.89 cm": (5.72, 8.89)
 }
 
-# --- CONFIGURACIÓN DEL USUARIO ---
-col1, col2 = st.columns(2)
+# --- INICIALIZACIÓN DE LA MEMORIA DE SESIÓN (session_state) ---
+if "nombre_proyecto" not in st.session_state:
+    st.session_state.nombre_proyecto = "Nuevo Proyecto"
+if "tipo_carta" not in st.session_state:
+    st.session_state.tipo_carta = list(MEDIDAS_CARTAS.keys())[0]
+if "ppp" not in st.session_state:
+    st.session_state.ppp = 300
+if "offset_porcentaje" not in st.session_state:
+    st.session_state.offset_porcentaje = 0.0
 
-with col1:
-    carta_seleccionada = st.selectbox("1. Selecciona el tamaño de la carta:", list(MEDIDAS_CARTAS.keys()))
+# --- FUNCIONES DE GESTIÓN DE PROYECTO ---
+def nuevo_proyecto():
+    st.session_state.nombre_proyecto = "Nuevo Proyecto"
+    st.session_state.tipo_carta = list(MEDIDAS_CARTAS.keys())[0]
+    st.session_state.ppp = 300
+    st.session_state.offset_porcentaje = 0.0
 
-with col2:
-    ppp_opciones = {
-        "300 PPP (Calidad Óptima para Impresión)": 300,
-        "144 PPP (Calidad Media / Borrador)": 144
-    }
-    ppp_seleccionado = st.selectbox("2. Selecciona la resolución de salida:", list(ppp_opciones.keys()))
+st.title("🃏 Maquetador de Cartas y Gestor de Proyectos")
+st.write("Configura el encuadre con una foto de prueba, exporta tu proyecto en JSON y procesa cientos de cartas en tandas seguras.")
 
-# Obtener valores numéricos elegidos
-cm_ancho, cm_alto = MEDIDAS_CARTAS[carta_seleccionada]
-ppp_final = ppp_opciones[ppp_seleccionado]
+# ==========================================
+# SECCIÓN 1: PANEL DE CONTROL DEL PROYECTO (JSON)
+# ==========================================
+st.header("📁 1. Gestión del Proyecto")
+expander_proyecto = st.expander("Configuración y exportación de archivos JSON", expanded=True)
 
-# --- CÁLCULO MATEMÁTICO DE PÍXELES OBJETIVO ---
-px_ancho = int(round((cm_ancho / 2.54) * ppp_final))
-px_alto = int(round((cm_alto / 2.54) * ppp_final))
+with expander_proyecto:
+    # Cargar JSON existente
+    archivo_json = st.file_uploader("Importar proyecto existente (.json)", type=["json"])
+    if archivo_json is not None:
+        try:
+            datos_proyecto = json.load(archivo_json)
+            st.session_state.nombre_proyecto = datos_proyecto.get("nombre_proyecto", "Proyecto Importado")
+            st.session_state.tipo_carta = datos_proyecto.get("tipo_carta", list(MEDIDAS_CARTAS.keys())[0])
+            st.session_state.ppp = datos_proyecto.get("ppp", 300)
+            st.session_state.offset_porcentaje = datos_proyecto.get("offset_porcentaje", 0.0)
+            st.success(f"✅ ¡Proyecto '{st.session_state.nombre_proyecto}' cargado con éxito!")
+        except Exception as e:
+            st.error(f"Error al leer el archivo JSON: {e}")
 
-st.info(f"📐 El objetivo de impresión es: **{px_ancho} x {px_alto} píxeles** (Metadato inyectado: {ppp_final} DPI).")
+    # Campos del proyecto actual
+    st.session_state.nombre_proyecto = st.text_input("Nombre del proyecto:", value=st.session_state.nombre_proyecto)
+    
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.session_state.tipo_carta = st.selectbox(
+            "Tamaño de carta destino:", list(MEDIDAS_CARTAS.keys()), 
+            index=list(MEDIDAS_CARTAS.keys()).index(st.session_state.tipo_carta)
+        )
+    with col_p2:
+        opciones_ppp = {"300 PPP (Óptimo)": 300, "144 PPP (Borrador)": 144}
+        index_ppp = 0 if st.session_state.ppp == 300 else 1
+        seleccion_ppp = st.selectbox("Resolución de salida:", list(opciones_ppp.keys()), index=index_ppp)
+        st.session_state.ppp = opciones_ppp[seleccion_ppp]
 
-# --- ZONA DE ARRASTRE DE ARCHIVOS (MÁS GRANDE CON EL CSS) ---
-archivos_subidos = st.file_uploader(
-    "3. ARRASTRA AQUÍ TUS IMÁGENES (Máximo 18 archivos simultáneos - JPG, JPEG, PNG)", 
-    type=["jpg", "jpeg", "png"], 
-    accept_multiple_files=True
+    # Botones de Acción
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        st.button("✨ Iniciar Nuevo Proyecto (Borrar todo)", on_click=nuevo_proyecto, use_container_width=True)
+    with col_b2:
+        # Estructura del JSON para descarga
+        json_exportar = {
+            "nombre_proyecto": st.session_state.nombre_proyecto,
+            "fecha_creacion": datetime.now().strftime("%Y-%m-%d_%H-%M"),
+            "tipo_carta": st.session_state.tipo_carta,
+            "ppp": st.session_state.ppp,
+            "offset_porcentaje": st.session_state.offset_porcentaje
+        }
+        json_str = json.dumps(json_exportar, indent=2)
+        fecha_str = datetime.now().strftime("%Y%m%d")
+        st.download_button(
+            label="💾 Exportar Configuración Proyecto (.json)",
+            data=json_str,
+            file_name=f"{st.session_state.nombre_proyecto.replace(' ', '_')}_{fecha_str}.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+# --- CÁLCULO DE DIMENSIONES ---
+cm_ancho, cm_alto = MEDIDAS_CARTAS[st.session_state.tipo_carta]
+px_ancho = int(round((cm_ancho / 2.54) * st.session_state.ppp))
+px_alto = int(round((cm_alto / 2.54) * st.session_state.ppp))
+
+# ==========================================
+# SECCIÓN 2: FOTO DE REFERENCIA Y ENCUADRE
+# ==========================================
+st.header("📸 2. Configurar Encuadre de Referencia")
+st.write("Sube una imagen de muestra para ajustar qué zona se recortará si la proporción no encaja perfectamente.")
+
+foto_referencia = st.file_uploader("Subir UNA foto de prueba:", type=["jpg", "jpeg", "png"], key="ref_uploader")
+
+# Función de recorte manual basada en el desplazamiento porcentual del usuario
+def recortar_con_offset(img, target_w, target_h, offset_p):
+    img_w, img_h = img.size
+    ratio_destino = target_w / target_h
+    ratio_original = img_w / img_h
+    
+    if ratio_original > ratio_destino:
+        # Sobra espacio en el ancho (Eje X)
+        ancho_requerido = img_h * ratio_destino
+        exceso_x = img_w - ancho_requerido
+        # Centro base (0.5) + desplazamiento (-0.5 a 0.5)
+        centro_x = 0.5 + (offset_p / 100.0)
+        centro_x = max(0.0, min(1.0, centro_x)) # Forzar límites seguros de 0 a 1
+        
+        izq = exceso_x * (centro_x - (ancho_requerido / (2 * exceso_x) if exceso_x != 0 else 0))
+        izq = max(0, min(img_w - ancho_requerido, izq))
+        box = (izq, 0, izq + ancho_requerido, img_h)
+        eje_afectado = "X"
+    else:
+        # Sobra espacio en el alto (Eje Y)
+        alto_requerido = img_w / ratio_destino
+        exceso_y = img_h - alto_requerido
+        # Centro base (0.5) + desplazamiento (-0.5 a 0.5). Invertimos el signo para comportamiento intuitivo (positivo = arriba)
+        centro_y = 0.5 - (offset_p / 100.0)
+        centro_y = max(0.0, min(1.0, centro_y))
+        
+        sup = exceso_y * (centro_y - (alto_requerido / (2 * exceso_y) if exceso_y != 0 else 0))
+        sup = max(0, min(img_h - alto_requerido, sup))
+        box = (0, sup, img_w, sup + alto_requerido)
+        eje_afectado = "Y"
+        
+    img_recortada = img.crop(box)
+    img_final = img_recortada.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    return img_final, eje_afectado
+
+if foto_referencia is not None:
+    img_ref = Image.open(foto_referencia)
+    img_ref = ImageOps.exif_transpose(img_ref)
+    
+    # Renderizar el recorte inicial simulado para saber qué eje se ve afectado
+    _, eje = recortar_con_offset(img_ref, px_ancho, px_alto, 0.0)
+    
+    st.write(f"Proporción de carta detectada. El eje sobrante que sufrirá el recorte es el **Eje {eje}**.")
+    
+    # Mostrar deslizador apropiado según el eje excedente
+    if eje == "X":
+        st.session_state.offset_porcentaje = st.slider(
+            "Desplazamiento horizontal del encuadre (%):", 
+            min_value=-50.0, max_value=50.0, value=st.session_state.offset_porcentaje, step=0.5,
+            help="Valores negativos mueven hacia la izquierda, positivos hacia la derecha."
+        )
+    else:
+        st.session_state.offset_porcentaje = st.slider(
+            "Desplazamiento vertical del encuadre (%):", 
+            min_value=-50.0, max_value=50.0, value=st.session_state.offset_porcentaje, step=0.5,
+            help="Valores positivos mueven hacia arriba, negativos hacia abajo."
+        )
+        
+    # Generar previsualización en tiempo real
+    img_previa, _ = recortar_con_offset(img_ref, px_ancho, px_alto, st.session_state.offset_porcentaje)
+    
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        st.image(img_ref, caption="Imagen Original", use_container_width=True)
+    with col_v2:
+        st.image(img_previa, caption=f"Resultado final en carta ({px_ancho}x{px_alto} px)", use_container_width=True)
+
+# ==========================================
+# SECCIÓN 3: PROCESAMIENTO DE LOTES (TANDAS)
+# ==========================================
+st.header("📦 3. Carga e Impresión de Cartas por Tanda")
+st.write(f"Las imágenes se recortarán siguiendo el patrón guardado (**Eje de desplazamiento: {st.session_state.offset_porcentaje}%**).")
+
+archivos_lote = st.file_uploader(
+    "Sube tus imágenes en grupos (Máximo 18 por tanda para proteger la estabilidad del servidor):", 
+    type=["jpg", "jpeg", "png"], accept_multiple_files=True, key="lote_uploader"
 )
 
-# --- CONTADOR DINÁMICO EN TIEMPO REAL ---
-if archivos_subidos:
-    total_fotos = len(archivos_subidos)
-    if total_fotos <= 18:
-        st.success(f"📸 **Imágenes cargadas:** {total_fotos} de 18 permitidas. Todo correcto para procesar.")
+if archivos_lote:
+    total_lote = len(archivos_lote)
+    if total_lote > 18:
+        st.error(f"⚠️ **Límite de seguridad superado:** Has subido {total_lote} imágenes. Elimina {total_lote - 18} archivos de la lista de abajo haciendo clic en su icono de papelera (X) para poder procesar.")
+        st.stop()
     else:
-        st.error(f"⚠️ **¡Límite excedido!** Has cargado **{total_fotos} imágenes**. Recuerda que el máximo son 18. Elimina {total_fotos - 18} fotos de la lista de abajo haciendo clic en su icono de papelera (X) para poder descargar el ZIP.")
+        st.success(f"📸 **Tanda válida:** {total_lote} de 18 archivos listos. Haz clic abajo para procesar.")
 
-# --- PROCESAMIENTO POR LOTE ---
-if archivos_subidos:
-    # COMPROBACIÓN DEL LÍMITE DE SEGURIDAD
-    if len(archivos_subidos) > 18:
-        st.stop() # Detiene la ejecución aquí de forma limpia para que el usuario borre fotos tranquilamente
+    if st.button("🚀 Procesar Tanda y Generar Archivo ZIP", use_container_width=True):
+        zip_buffer = io.BytesIO()
+        lineas_informe = [
+            "==================================================",
+            "      INFORME DE MAQUETACIÓN POR LOTE             ",
+            f"      PROYECTO: {st.session_state.nombre_proyecto.upper()} ",
+            "==================================================",
+            f"Configuración del Lienzo: {st.session_state.tipo_carta}",
+            f"Resolución Inyectada: {st.session_state.ppp} PPP",
+            f"Dimensiones de Impresión: {px_ancho} x {px_alto} px",
+            f"Desplazamiento Porcentual Aplicado: {st.session_state.offset_porcentaje}%",
+            "--------------------------------------------------\n"
+        ]
         
-    # Creamos un contenedor de bytes para armar el ZIP en memoria sin guardar nada en el servidor
-    zip_buffer = io.BytesIO()
-    
-    # Texto que acumulará los datos para el informe de texto
-    lineas_informe = []
-    lineas_informe.append("==================================================")
-    lineas_informe.append("      INFORME DE PROCESAMIENTO DE IMÁGENES        ")
-    lineas_informe.append("==================================================")
-    lineas_informe.append(f"Tamaño elegido: {carta_seleccionada}")
-    lineas_informe.append(f"Resolución de salida: {ppp_final} PPP")
-    lineas_informe.append(f"Dimensiones objetivo en píxeles: {px_ancho} x {px_alto} px")
-    lineas_informe.append(f"Total de imágenes procesadas: {len(archivos_subidos)}")
-    lineas_informe.append("--------------------------------------------------\n")
-
-    # Barra de progreso visual para el usuario
-    barra_progreso = st.progress(0)
-    status_text = st.empty()
-    
-    # Abrimos el archivo ZIP para empezar a meter las imágenes dentro
-    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as archivo_zip:
-        
-        for idx, archivo in enumerate(archivos_subidos):
-            status_text.text(f"Procesando {idx + 1}/{len(archivos_subidos)}: {archivo.name}")
-            
-            img_original = Image.open(archivo)
-            img_original = ImageOps.exif_transpose(img_original) # Corregir rotaciones de móviles
-            
-            orig_w, orig_h = img_original.size
-            
-            # Determinar si se agrandó o se achicó para el informe
-            if (orig_w * orig_h) < (px_ancho * px_alto):
-                accion = "AGRANDADA (Upscale / Interpolación Lanzcos)"
-            elif (orig_w * orig_h) > (px_ancho * px_alto):
-                accion = "ACHICADA (Downscale / Compresión de píxeles)"
-            else:
-                accion = "MANTUVO TAMAÑO (Solo ajuste de proporciones)"
-                
-            # Verificar si la proporción original difiere de la de destino (recorte)
-            prop_original = orig_w / orig_h
-            prop_destino = px_ancho / px_alto
-            recorte = "SÍ (Bordes recortados para encajar proporción)" if abs(prop_original - prop_destino) > 0.01 else "NO (Encaje perfecto)"
-            
-            # Registrar datos en el informe para este archivo
-            lineas_informe.append(f"Archivo: {archivo.name}")
-            lineas_informe.append(f"  - Tamaño original: {orig_w} x {orig_h} px")
-            lineas_informe.append(f"  - Acción tomada: {accion}")
-            lineas_informe.append(f"  - Hubo recorte por proporción: {recorte}")
-            lineas_informe.append(f"  - Resultado: {px_ancho} x {px_alto} px a {ppp_final} DPI\n")
-            
-            # REDIMENSIONADO INTELIGENTE Y CENTRADO
-            img_procesada = ImageOps.fit(
-                img_original, 
-                (px_ancho, px_alto), 
-                method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.5)
-            )
-            
-            # Guardamos la imagen procesada en un buffer de memoria temporal
-            img_buffer = io.BytesIO()
-            formato = img_original.format if img_original.format else "JPEG"
-            img_procesada.save(img_buffer, format=formato, dpi=(ppp_final, ppp_final), quality=95)
-            img_buffer.seek(0)
-            
-            # Añadir la imagen al ZIP
-            nombre_final_imagen = f"LISTA_{archivo.name}"
-            archivo_zip.writestr(nombre_final_imagen, img_buffer.read())
-            
-            # Actualizar barra de progreso web
-            barra_progreso.progress((idx + 1) / len(archivos_subidos))
-            
-        # Al terminar todas las imágenes, generamos el archivo informe.txt en texto plano
-        texto_informe = "\n".join(lineas_informe)
-        archivo_zip.writestr("informe.txt", texto_informe)
-        
-    status_text.text("✨ ¡Todo procesado con éxito! El paquete ZIP está listo.")
-    
-    # Preparar el botón de descarga del ZIP completo
-    zip_buffer.seek(0)
-    st.write("---")
-    st.download_button(
-        label="📥 Descargar todas las cartas en un archivo ZIP",
-        data=zip_buffer,
-        file_name=f"cartas_listas_{ppp_final}ppp.zip",
-        mime="application/zip",
-        use_container_width=True
-    )
