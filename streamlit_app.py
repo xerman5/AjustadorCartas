@@ -314,8 +314,19 @@ def proyecto_json():
 # ============================================================
 # CABECERA + AJUSTES SIEMPRE VISIBLES
 # ============================================================
-st.title("🃏 Maquetador de Cartas")
-st.caption("Prepara tus cartas, ajusta el recorte y descárgalas por tandas.")
+header_title, header_help = st.columns([9, 1], vertical_alignment="center")
+with header_title:
+    st.title("🃏 Maquetador de Cartas")
+    st.caption("Prepara tus cartas, ajusta el recorte y descárgalas por tandas.")
+
+with header_help:
+    with st.popover("?", help="Abrir ayuda"):
+        guia_path = Path(__file__).with_name("GUIA_AYUDA.md")
+        try:
+            guia_texto = guia_path.read_text(encoding="utf-8")
+            st.markdown(guia_texto)
+        except OSError:
+            st.error("No se ha podido cargar la guía de ayuda.")
 
 col1, col2 = st.columns(2)
 with col1:
