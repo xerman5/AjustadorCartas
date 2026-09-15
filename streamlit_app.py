@@ -36,7 +36,6 @@ PPP_OPCIONES = {
 
 MAX_FOTOS = 18
 MAX_MB_POR_FOTO = 12
-MAX_TOTAL_MB = None
 
 
 
@@ -58,6 +57,10 @@ def init_state():
         "lote_version": 0,
         "lote_ack_id": "",
         "lote_reset_token": 0,
+        "lote_advance_token": 0,
+        "lote_numero": 1,
+        "lote_total_tandas": 0,
+        "lote_lista": False,
         "last_upload_id": "",
         "tmp_dir": tempfile.mkdtemp(prefix="maquetador_cartas_"),
         "zip_result": None,
@@ -95,6 +98,11 @@ def reset_project():
     st.session_state.lote_version += 1
     st.session_state.lote_ack_id = ""
     st.session_state.lote_reset_token += 1
+    st.session_state.lote_advance_token = 0
+    st.session_state.lote_numero = 1
+    st.session_state.lote_total_tandas = 0
+    st.session_state.lote_lista = False
+    st.session_state.last_upload_id = ""
     st.session_state.zip_result = None
 
 
@@ -321,158 +329,357 @@ with st.expander("2 · Encuadre de referencia", expanded=False):
         st.info("Sube una foto para ajustar el recorte.")
 
 
-with st.expander("3 · Tanda de cartas", expanded=True):
+with st.expander("3 · Tandas de cartas", expanded=True):
     total_actual = len(st.session_state.lote)
+    lote_lista = st.session_state.lote_lista
+    total_tandas = st.session_state.lote_total_tandas
+    numero_tanda = st.session_state.lote_numero
 
-    st.progress(total_actual / MAX_FOTOS, text=f"{total_actual} / {MAX_FOTOS} cartas")
-    st.caption(
-        f"Selecciona hasta {MAX_FOTOS} imágenes de una vez. "
-        f"Máximo {MAX_MB_POR_FOTO} MB por imagen y {MAX_TOTAL_MB} MB por tanda."
-    )
-
-    if total_actual < MAX_FOTOS:
-        upload = batch_uploader(
-            key="batch_uploader",
-            max_files=MAX_FOTOS - total_actual,
-            max_file_mb=MAX_MB_POR_FOTO,
-            max_total_mb=MAX_TOTAL_MB,
-            accepted_types=["jpg", "jpeg", "png"],
-            ack_id=st.session_state.lote_ack_id,
-            reset_token=st.session_state.lote_reset_token,
+    if total_tandas:
+        st.markdown(
+            f"### Tanda {numero_tanda} de {total_tandas}"
+        )
+        st.progress(
+            min(1.0, total_actual / MAX_FOTOS),
+            text=f"{total_actual} / {MAX_FOTOS} fotos"
+        )
+    else:
+        st.caption(
+            f"Selecciona todas las cartas que quieras. "
+            f"Se dividirán automáticamente en tandas de {MAX_FOTOS}. "
+            f"Máximo {MAX_MB_POR_FOTO} MB por foto."
         )
 
-        if upload and isinstance(upload, dict) and upload.get("upload_id"):
-            upload_id = str(upload["upload_id"])
-            if upload_id != st.session_state.get("last_upload_id", ""):
-                try:
-                    name_original = str(upload.get("name", "carta.jpg"))
-                    ext = Path(name_original).suffix.lower()
-                    if ext not in {".jpg", ".jpeg", ".png"}:
-                        raise ValueError("Formato no permitido")
+    upload = batch_uploader(
+        key="batch_uploader",
+        batch_size=MAX_FOTOS,
+        max_file_mb=MAX_MB_POR_FOTO,
+        accepted_types=["jpg", "jpeg", "png"],
+        ack_id=st.session_state.lote_ack_id,
+        advance_token=st.session_state.lote_advance_token,
+        reset_token=st.session_state.lote_reset_token,
+        max_queue_files=500,
+    )
 
-                    raw = base64.b64decode(upload.get("base64", ""), validate=True)
-                    if len(raw) > MAX_MB_POR_FOTO * 1024 * 1024:
-                        raise ValueError(f"La imagen supera {MAX_MB_POR_FOTO} MB")
+    if upload and isinstance(upload, dict):
+        upload_id = str(upload.get("upload_id", ""))
 
-                    ocupados = {item["name"].lower() for item in st.session_state.lote}
-                    name = name_original
-                    if name.lower() in ocupados:
-                        base = Path(name).stem
-                        contador = 2
-                        candidato = f"{base}_{contador}{ext}"
-                        while candidato.lower() in ocupados:
-                            contador += 1
-                            candidato = f"{base}_{contador}{ext}"
-                        name = candidato
+        if upload_id and upload_id != st.session_state.last_upload_id:
+            try:
+                name_original = str(upload.get("name", "carta.jpg"))
+                ext = Path(name_original).suffix.lower()
 
-                    numero = len(st.session_state.lote) + 1
-                    destino = (
-                        Path(st.session_state.tmp_dir)
-                        / f"entrada_{numero:02d}_{nombre_seguro(Path(name).stem)}{ext}"
+                if ext not in {".jpg", ".jpeg", ".png"}:
+                    raise ValueError("Formato no permitido")
+
+                raw = base64.b64decode(
+                    upload.get("base64", ""),
+                    validate=True,
+                )
+
+                if len(raw) > MAX_MB_POR_FOTO * 1024 * 1024:
+                    raise ValueError(
+                        f"La imagen supera {MAX_MB_POR_FOTO} MB"
                     )
-                    destino.write_bytes(raw)
 
-                    st.session_state.lote.append({
-                        "name": name,
-                        "path": str(destino),
-                        "size": len(raw),
-                    })
-                    st.session_state.last_upload_id = upload_id
-                    st.session_state.lote_ack_id = upload_id
-                    st.session_state.zip_result = None
-                    st.rerun()
-                except (ValueError, OSError, base64.binascii.Error) as exc:
-                    st.session_state.last_upload_id = upload_id
-                    st.session_state.lote_ack_id = upload_id
-                    st.error(f"No se pudo añadir {upload.get('name', 'la imagen')}: {exc}")
+                ocupados = {
+                    item["name"].lower()
+                    for item in st.session_state.lote
+                }
 
+                name = name_original
+                if name.lower() in ocupados:
+                    base = Path(name).stem
+                    contador = 2
+                    candidato = f"{base}_{contador}{ext}"
+                    while candidato.lower() in ocupados:
+                        contador += 1
+                        candidato = f"{base}_{contador}{ext}"
+                    name = candidato
+
+                numero = len(st.session_state.lote) + 1
+                destino = (
+                    Path(st.session_state.tmp_dir)
+                    / (
+                        f"t{int(upload.get('batch_number', numero_tanda)):02d}_"
+                        f"{numero:02d}_"
+                        f"{nombre_seguro(Path(name).stem)}{ext}"
+                    )
+                )
+
+                destino.write_bytes(raw)
+
+                st.session_state.lote.append({
+                    "name": name,
+                    "path": str(destino),
+                    "size": len(raw),
+                })
+
+                st.session_state.lote_numero = int(
+                    upload.get("batch_number", numero_tanda)
+                )
+                st.session_state.lote_total_tandas = int(
+                    upload.get("total_batches", total_tandas or 1)
+                )
+                st.session_state.last_upload_id = upload_id
+                st.session_state.lote_ack_id = upload_id
+                st.session_state.lote_lista = False
+                st.session_state.zip_result = None
+                st.rerun()
+
+            except (ValueError, OSError, base64.binascii.Error) as exc:
+                st.session_state.last_upload_id = upload_id
+                st.session_state.lote_ack_id = upload_id
+                st.error(
+                    f"No se pudo añadir {upload.get('name', 'la imagen')}: {exc}"
+                )
+
+        elif upload.get("batch_complete"):
+            st.session_state.lote_numero = int(
+                upload.get("batch_number", numero_tanda)
+            )
+            st.session_state.lote_total_tandas = int(
+                upload.get("total_batches", total_tandas or 1)
+            )
+            st.session_state.lote_lista = True
+
+    # --------------------------------------------------------
+    # Estado de la tanda actual
+    # --------------------------------------------------------
     if st.session_state.lote:
+        total_actual = len(st.session_state.lote)
+        total_tandas = st.session_state.lote_total_tandas
+        numero_tanda = st.session_state.lote_numero
+
+        if st.session_state.lote_lista:
+            if numero_tanda < total_tandas:
+                st.success(
+                    f"Tanda {numero_tanda} lista · quedan "
+                    f"{total_tandas - numero_tanda} tandas."
+                )
+            else:
+                st.success("Última tanda lista.")
+        else:
+            st.caption(
+                f"Recibidas {total_actual} de {MAX_FOTOS} fotos…"
+            )
+
+        st.divider()
+
+        # Lista más cómoda: 10 fotos visibles aproximadamente y scroll para el resto.
         for i, item in enumerate(st.session_state.lote):
-            col_a, col_b, col_c = st.columns([0.7, 2.8, 0.9])
+            col_a, col_b, col_c = st.columns([0.6, 3.8, 0.8])
+
             with col_a:
                 st.write(f"**{i + 1:02d}**")
+
             with col_b:
                 st.write(item["name"])
-                st.caption(f"{item['size'] / (1024 * 1024):.1f} MB")
+                st.caption(
+                    f"{item['size'] / (1024 * 1024):.1f} MB"
+                )
+
             with col_c:
-                if st.button("×", key=f"del_{i}", help="Quitar de la tanda"):
+                if st.button(
+                    "×",
+                    key=f"del_{numero_tanda}_{i}_{st.session_state.lote_version}",
+                    help="Quitar de la tanda",
+                ):
                     Path(item["path"]).unlink(missing_ok=True)
                     st.session_state.lote.pop(i)
                     st.session_state.lote_version += 1
                     st.session_state.zip_result = None
+                    st.session_state.lote_lista = False
                     st.rerun()
 
         st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Limpiar tanda", use_container_width=True):
+
+        # ----------------------------------------------------
+        # Procesar / siguiente / limpiar
+        # ----------------------------------------------------
+        if st.session_state.lote_lista:
+            if numero_tanda < total_tandas:
+                c1, c2, c3 = st.columns([1, 1, 1])
+            else:
+                c1, c2 = st.columns(2)
+
+            with c1:
+                if st.button(
+                    "Procesar tanda",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    with st.spinner("Procesando…"):
+                        zip_buffer = io.BytesIO()
+                        informe = [
+                            "INFORME DE MAQUETACIÓN",
+                            f"Proyecto: {st.session_state.nombre_proyecto}",
+                            f"Tanda: {numero_tanda} / {total_tandas}",
+                            f"Tamaño: {st.session_state.tipo_carta}",
+                            f"Resolución: {st.session_state.ppp} PPP",
+                            f"Salida: {px_ancho} × {px_alto} px",
+                            f"Offset: {st.session_state.offset_porcentaje:+.1f}%",
+                            f"Cartas procesadas: {len(st.session_state.lote)}",
+                            "",
+                        ]
+
+                        try:
+                            with zipfile.ZipFile(
+                                zip_buffer,
+                                "w",
+                                compression=zipfile.ZIP_DEFLATED,
+                            ) as zf:
+                                nombres_usados = set()
+
+                                for i, item in enumerate(
+                                    st.session_state.lote,
+                                    start=1,
+                                ):
+                                    img = cargar_imagen(item["path"])
+                                    final, _, _ = recortar_y_redimensionar(
+                                        img,
+                                        px_ancho,
+                                        px_alto,
+                                        st.session_state.offset_porcentaje,
+                                    )
+                                    final = preparar_rgb(final)
+
+                                    base = nombre_seguro(item["name"])
+                                    salida = f"{i:02d}_{base}.jpg"
+                                    contador = 2
+
+                                    while salida.lower() in nombres_usados:
+                                        salida = (
+                                            f"{i:02d}_{base}_{contador}.jpg"
+                                        )
+                                        contador += 1
+
+                                    nombres_usados.add(salida.lower())
+
+                                    out = io.BytesIO()
+                                    final.save(
+                                        out,
+                                        format="JPEG",
+                                        quality=95,
+                                        optimize=True,
+                                        dpi=(
+                                            st.session_state.ppp,
+                                            st.session_state.ppp,
+                                        ),
+                                    )
+                                    zf.writestr(
+                                        salida,
+                                        out.getvalue(),
+                                    )
+
+                                zf.writestr(
+                                    "INFORME.txt",
+                                    "\n".join(informe),
+                                )
+
+                            st.session_state.zip_result = (
+                                zip_buffer.getvalue()
+                            )
+                            st.success("Tanda procesada.")
+
+                        except (
+                            OSError,
+                            ValueError,
+                            UnidentifiedImageError,
+                        ) as exc:
+                            st.error(
+                                f"No se pudo procesar la tanda: {exc}"
+                            )
+
+            if numero_tanda < total_tandas:
+                with c2:
+                    if st.button(
+                        "Siguiente tanda →",
+                        use_container_width=True,
+                        disabled=st.session_state.zip_result is None,
+                    ):
+                        for item in st.session_state.lote:
+                            Path(item["path"]).unlink(missing_ok=True)
+
+                        st.session_state.lote = []
+                        st.session_state.lote_version += 1
+                        st.session_state.lote_ack_id = ""
+                        st.session_state.last_upload_id = ""
+                        st.session_state.lote_lista = False
+                        st.session_state.zip_result = None
+                        st.session_state.lote_advance_token += 1
+                        st.rerun()
+
+                with c3:
+                    if st.button(
+                        "Cancelar selección",
+                        use_container_width=True,
+                    ):
+                        for item in st.session_state.lote:
+                            Path(item["path"]).unlink(missing_ok=True)
+
+                        st.session_state.lote = []
+                        st.session_state.lote_version += 1
+                        st.session_state.lote_ack_id = ""
+                        st.session_state.last_upload_id = ""
+                        st.session_state.lote_lista = False
+                        st.session_state.lote_total_tandas = 0
+                        st.session_state.lote_numero = 1
+                        st.session_state.zip_result = None
+                        st.session_state.lote_reset_token += 1
+                        st.rerun()
+
+            else:
+                with c2:
+                    if st.button(
+                        "Nueva selección",
+                        use_container_width=True,
+                    ):
+                        for item in st.session_state.lote:
+                            Path(item["path"]).unlink(missing_ok=True)
+
+                        st.session_state.lote = []
+                        st.session_state.lote_version += 1
+                        st.session_state.lote_ack_id = ""
+                        st.session_state.last_upload_id = ""
+                        st.session_state.lote_lista = False
+                        st.session_state.lote_total_tandas = 0
+                        st.session_state.lote_numero = 1
+                        st.session_state.zip_result = None
+                        st.session_state.lote_reset_token += 1
+                        st.rerun()
+
+        else:
+            # Antes de completar la tanda, solo permitimos cancelar.
+            if st.button(
+                "Cancelar selección",
+                use_container_width=True,
+            ):
                 for item in st.session_state.lote:
                     Path(item["path"]).unlink(missing_ok=True)
+
                 st.session_state.lote = []
                 st.session_state.lote_version += 1
                 st.session_state.lote_ack_id = ""
                 st.session_state.last_upload_id = ""
-                st.session_state.lote_reset_token += 1
+                st.session_state.lote_lista = False
+                st.session_state.lote_total_tandas = 0
+                st.session_state.lote_numero = 1
                 st.session_state.zip_result = None
+                st.session_state.lote_reset_token += 1
                 st.rerun()
 
-        with c2:
-            if st.button("Procesar tanda", type="primary", use_container_width=True):
-                with st.spinner("Procesando imágenes…"):
-                    zip_buffer = io.BytesIO()
-                    informe = [
-                        "INFORME DE MAQUETACIÓN",
-                        f"Proyecto: {st.session_state.nombre_proyecto}",
-                        f"Tamaño: {st.session_state.tipo_carta}",
-                        f"Resolución: {st.session_state.ppp} PPP",
-                        f"Salida: {px_ancho} × {px_alto} px",
-                        f"Offset: {st.session_state.offset_porcentaje:+.1f}%",
-                        f"Cartas procesadas: {len(st.session_state.lote)}",
-                        "",
-                    ]
-                    try:
-                        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                            nombres_usados = set()
-                            for i, item in enumerate(st.session_state.lote, start=1):
-                                img = cargar_imagen(item["path"])
-                                final, _, _ = recortar_y_redimensionar(
-                                    img,
-                                    px_ancho,
-                                    px_alto,
-                                    st.session_state.offset_porcentaje,
-                                )
-                                final = preparar_rgb(final)
-
-                                base = nombre_seguro(item["name"])
-                                salida = f"{i:02d}_{base}.jpg"
-                                contador = 2
-                                while salida.lower() in nombres_usados:
-                                    salida = f"{i:02d}_{base}_{contador}.jpg"
-                                    contador += 1
-                                nombres_usados.add(salida.lower())
-
-                                out = io.BytesIO()
-                                final.save(
-                                    out,
-                                    format="JPEG",
-                                    quality=95,
-                                    optimize=True,
-                                    dpi=(st.session_state.ppp, st.session_state.ppp),
-                                )
-                                zf.writestr(salida, out.getvalue())
-
-                            zf.writestr("INFORME.txt", "\n".join(informe))
-
-                        st.session_state.zip_result = zip_buffer.getvalue()
-                        st.success("Tanda procesada correctamente.")
-                    except (OSError, ValueError, UnidentifiedImageError) as exc:
-                        st.error(f"No se pudo procesar la tanda: {exc}")
-
+    # --------------------------------------------------------
+    # Descarga
+    # --------------------------------------------------------
     if st.session_state.zip_result:
         st.download_button(
-            "Descargar ZIP",
+            f"Descargar ZIP · tanda {st.session_state.lote_numero}",
             data=st.session_state.zip_result,
-            file_name=f"{nombre_seguro(st.session_state.nombre_proyecto)}_cartas.zip",
+            file_name=(
+                f"{nombre_seguro(st.session_state.nombre_proyecto)}"
+                f"_tanda_{st.session_state.lote_numero:02d}.zip"
+            ),
             mime="application/zip",
             use_container_width=True,
             type="primary",
