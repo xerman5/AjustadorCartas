@@ -1,39 +1,40 @@
 # Maquetador de Cartas · Streamlit
 
-App de Streamlit para configurar un proyecto, ajustar el encuadre y procesar cartas por tandas.
+Aplicación Streamlit para ajustar un encuadre, guardar la configuración del proyecto y procesar cartas por tandas.
 
 ## Estructura
 
 ```text
-.
-├── app.py
-├── requirements.txt
-├── .streamlit/
-│   └── config.toml
-└── uploader_component/
-    ├── __init__.py
-    └── index.html
+app.py
+requirements.txt
+.streamlit/config.toml
+uploader_component/__init__.py
+uploader_component/index.html
 ```
+
+## Subida por tandas
+
+Puedes seleccionar muchas imágenes de una sola vez. El componente las conserva en el navegador y las divide automáticamente en tandas de 18.
+
+Solo se envía al servidor una imagen cada vez y únicamente perteneciente a la tanda activa.
+
+- 18 fotos por tanda
+- 12 MB máximo por foto
+- JPG / JPEG / PNG
+- Hasta 500 archivos en la selección del navegador
+- Lista con scroll de aproximadamente 10 fotos visibles
+
+Ejemplo con 70 fotos:
+
+- Tanda 1: 18 fotos
+- Tanda 2: 18 fotos
+- Tanda 3: 18 fotos
+- Tanda 4: 16 fotos
+
+La aplicación permite subir, procesar y descargar cada tanda antes de pasar a la siguiente.
 
 ## Streamlit Community Cloud
 
-1. Sube todos estos archivos al repositorio de GitHub.
-2. En Streamlit Community Cloud crea la app apuntando a `app.py`.
-3. No necesitas instalar Node ni hacer un build del componente: el frontend es un componente V1 estático servido directamente por Streamlit.
+Sube todos estos archivos al repositorio de GitHub y configura `app.py` como archivo principal.
 
-## Uploader por lotes
-
-El usuario puede seleccionar o arrastrar hasta 18 imágenes de una vez. El navegador comprueba el número de archivos y el tamaño individual antes de enviarlos.
-
-Una vez pulsado «Añadir a la tanda», el componente envía las imágenes **una por una**, esperando la confirmación de Streamlit antes de continuar. De esta forma no se transmite una tanda completa de decenas o cientos de megabytes como un único mensaje.
-
-Límites actuales:
-
-- 18 imágenes por tanda.
-- 12 MB por imagen.
-- JPG/JPEG/PNG.
-- 30 MB de `server.maxMessageSize`, suficiente para el mensaje de una imagen de 12 MB codificada.
-
-## Importante
-
-El límite de 18 se aplica en el navegador, por lo que no se utiliza `st.file_uploader(accept_multiple_files=True)` para las cartas. Esto evita que una selección masiva pase primero al uploader nativo de Streamlit.
+No requiere Node, npm ni un proceso de compilación del componente.

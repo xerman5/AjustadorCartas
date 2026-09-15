@@ -9,44 +9,45 @@
 html,body { margin:0; padding:0; background:transparent; }
 body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#202124; }
 .wrap { width:100%; }
-.drop { border:1px dashed #aaa; border-radius:9px; padding:17px 15px; text-align:center; background:#fafafa; cursor:pointer; transition:.15s; }
+.drop { border:1px dashed #aaa; border-radius:9px; padding:15px 14px; text-align:center; background:#fafafa; cursor:pointer; transition:.15s; }
 .drop:hover,.drop.drag { border-color:#666; background:#f3f3f3; }
 .drop.disabled { opacity:.5; cursor:default; }
 strong { display:block; margin-bottom:5px; font-size:14px; }
 small { color:#666; }
 .msg { margin-top:8px; font-size:12px; min-height:18px; }
 .ok { color:#237a42; } .err { color:#9d2929; } .muted { color:#666; }
-.files { margin-top:8px; max-height:180px; overflow:auto; }
-.file { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:6px 2px; border-bottom:1px solid #e8e8e8; font-size:12px; }
+.files { margin-top:9px; max-height:380px; overflow:auto; border:1px solid #e5e5e5; border-radius:8px; background:#fff; }
+.file { display:flex; justify-content:space-between; gap:10px; align-items:center; min-height:34px; padding:7px 9px; border-bottom:1px solid #eeeeee; font-size:12px; }
+.file:last-child { border-bottom:0; }
 .name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .size { color:#666; white-space:nowrap; }
+.empty { padding:15px 10px; text-align:center; color:#777; font-size:12px; }
 .footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:9px; }
-.count { font-size:12px; color:#666; }
-button { border:0; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600; background:#222; color:#fff; }
+.count { font-size:12px; color:#666; line-height:1.35; }
+button { border:0; border-radius:7px; padding:9px 13px; cursor:pointer; font-weight:600; background:#222; color:#fff; }
 button:disabled { opacity:.4; cursor:default; }
+.badge { display:inline-block; margin-top:6px; padding:3px 7px; border-radius:999px; background:#eee; font-size:11px; color:#555; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <div id="drop" class="drop">
     <strong>Selecciona o arrastra tus cartas</strong>
-    <small id="help">Hasta 18 archivos · 12 MB/archivo</small>
+    <small id="help">Puedes seleccionar muchas · JPG, PNG · 12 MB/archivo</small>
     <input id="picker" type="file" multiple hidden accept=".jpg,.jpeg,.png,image/jpeg,image/png">
   </div>
   <div id="msg" class="msg muted"></div>
-  <div id="files" class="files"></div>
+  <div id="batch" class="badge" style="display:none"></div>
+  <div id="files" class="files"><div class="empty">Todavía no hay imágenes seleccionadas.</div></div>
   <div class="footer">
     <div id="count" class="count">0 seleccionadas</div>
-    <button id="send" disabled>Añadir a la tanda</button>
+    <button id="send" disabled>Subir tanda</button>
   </div>
 </div>
 <script>
 "use strict";
 
-// Minimal Streamlit Components v1 protocol.
-// No dependency on streamlit-component-lib is used because the current
-// package is ESM and cannot be loaded with a classic <script> tag.
-
+// Streamlit Components v1 protocol, without streamlit-component-lib.
 const MSG = {
   READY: "streamlit:componentReady",
   RENDER: "streamlit:render",
@@ -55,27 +56,11 @@ const MSG = {
 };
 
 function sendMessage(type, data = {}) {
-  window.parent.postMessage({
-    isStreamlitMessage: true,
-    type,
-    ...data,
-  }, "*");
+  window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
 }
-
-function setReady() {
-  sendMessage(MSG.READY, { apiVersion: 1 });
-}
-
-function setHeight(height) {
-  sendMessage(MSG.HEIGHT, { height });
-}
-
-function setValue(value) {
-  sendMessage(MSG.VALUE, {
-    value,
-    dataType: "json",
-  });
-}
+function setReady() { sendMessage(MSG.READY, { apiVersion: 1 }); }
+function setHeight(height) { sendMessage(MSG.HEIGHT, { height }); }
+function setValue(value) { sendMessage(MSG.VALUE, { value, dataType: "json" }); }
 
 const drop = document.getElementById("drop");
 const picker = document.getElementById("picker");
@@ -84,115 +69,127 @@ const filesEl = document.getElementById("files");
 const send = document.getElementById("send");
 const countEl = document.getElementById("count");
 const helpEl = document.getElementById("help");
+const batchEl = document.getElementById("batch");
 
 let config = {
-  max_files: 18,
+  batch_size: 18,
   max_file_mb: 12,
-  max_total_mb: 80,
   accepted_types: ["jpg", "jpeg", "png"],
-  ack_id: "",
+  advance_token: 0,
   reset_token: 0,
+  max_queue_files: 500,
 };
 
-let selected = [];
+let allFiles = [];
+let batchIndex = 0;
 let queue = [];
 let sending = false;
+let batchDone = false;
 let currentId = null;
 let lastAck = "";
 let resetToken = null;
+let lastAdvanceToken = null;
+let announcedDoneKey = "";
 
-function fmtMb(bytes) {
-  return (bytes / 1024 / 1024).toFixed(1) + " MB";
-}
-
-function setMsg(text, cls = "muted") {
-  msg.className = "msg " + cls;
-  msg.textContent = text;
-}
-
+function fmtMb(bytes) { return (bytes / 1024 / 1024).toFixed(1) + " MB"; }
+function totalMb(files) { return files.reduce((sum, file) => sum + file.size, 0) / 1024 / 1024; }
+function setMsg(text, cls = "muted") { msg.className = "msg " + cls; msg.textContent = text; }
 function escapeHtml(text) {
   return String(text).replace(/[&<>\"']/g, ch => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
   })[ch]);
 }
-
+function currentBatchFiles() {
+  const size = Number(config.batch_size || 18);
+  const start = batchIndex * size;
+  return allFiles.slice(start, start + size);
+}
+function totalBatches() {
+  const size = Number(config.batch_size || 18);
+  return allFiles.length ? Math.ceil(allFiles.length / size) : 0;
+}
 function render() {
+  const current = currentBatchFiles();
   filesEl.innerHTML = "";
-  selected.forEach(file => {
-    const row = document.createElement("div");
-    row.className = "file";
-    row.innerHTML = `<span class="name">${escapeHtml(file.name)}</span><span class="size">${fmtMb(file.size)}</span>`;
-    filesEl.appendChild(row);
-  });
+  if (!allFiles.length) {
+    filesEl.innerHTML = '<div class="empty">Todavía no hay imágenes seleccionadas.</div>';
+  } else {
+    // During an active batch show that batch. Before sending, show all selected.
+    const list = batchDone || sending ? current : allFiles;
+    list.forEach((file, i) => {
+      const row = document.createElement("div");
+      row.className = "file";
+      row.innerHTML = `<span class="name">${escapeHtml(file.name)}</span><span class="size">${fmtMb(file.size)}</span>`;
+      filesEl.appendChild(row);
+    });
+  }
 
-  countEl.textContent = `${selected.length} seleccionada${selected.length === 1 ? "" : "s"}`;
-  send.disabled = selected.length === 0 || sending;
-  drop.classList.toggle("disabled", sending);
+  const batches = totalBatches();
+  if (allFiles.length) {
+    const currentLabel = Math.min(batchIndex + 1, batches);
+    batchEl.style.display = "inline-block";
+    batchEl.textContent = `Tanda ${currentLabel} de ${batches} · ${current.length} fotos`;
+  } else {
+    batchEl.style.display = "none";
+  }
+
+  if (sending) {
+    countEl.textContent = `Subiendo tanda ${batchIndex + 1}…`;
+  } else if (batchDone) {
+    const remaining = Math.max(0, allFiles.length - (batchIndex + 1) * Number(config.batch_size || 18));
+    countEl.textContent = remaining ? `${remaining} fotos pendientes` : "Última tanda preparada";
+  } else {
+    countEl.textContent = `${allFiles.length} seleccionadas · ${batches} tanda${batches === 1 ? "" : "s"}`;
+  }
+
+  send.disabled = !current.length || sending || batchDone;
+  send.textContent = batchDone ? "Tanda preparada" : `Subir tanda ${Math.min(batchIndex + 1, batches || 1)}`;
+  drop.classList.toggle("disabled", sending || batchDone);
 }
 
 function acceptFiles(fileList) {
-  if (sending) return;
-
+  if (sending || batchDone) return;
   const incoming = Array.from(fileList || []);
   if (!incoming.length) return;
 
-  const maxFiles = Number(config.max_files || 18);
   const maxFileBytes = Number(config.max_file_mb || 12) * 1024 * 1024;
-  const maxTotalBytes = Number(config.max_total_mb || 80) * 1024 * 1024;
-
+  const maxQueue = Number(config.max_queue_files || 500);
   let added = 0;
   const rejected = [];
-  let total = selected.reduce((sum, file) => sum + file.size, 0);
 
   for (const file of incoming) {
-    if (selected.length >= maxFiles) {
-      rejected.push(`${file.name}: máximo ${maxFiles}`);
+    if (allFiles.length >= maxQueue) {
+      rejected.push(`${file.name}: máximo ${maxQueue} archivos`);
       continue;
     }
-
     const ext = (file.name.split(".").pop() || "").toLowerCase();
     if (!config.accepted_types.includes(ext)) {
       rejected.push(`${file.name}: formato no válido`);
       continue;
     }
-
     if (file.size > maxFileBytes) {
       rejected.push(`${file.name}: supera ${config.max_file_mb} MB`);
       continue;
     }
-
-    if (total + file.size > maxTotalBytes) {
-      rejected.push(`${file.name}: supera ${config.max_total_mb} MB de la tanda`);
-      continue;
-    }
-
-    selected.push(file);
-    total += file.size;
+    allFiles.push(file);
     added++;
   }
 
-  render();
   picker.value = "";
-
+  render();
   if (rejected.length) {
     setMsg(`${added} añadidas · ${rejected.length} rechazadas`, "err");
   } else if (added) {
-    setMsg(`${added} añadida${added === 1 ? "" : "s"}`, "ok");
+    setMsg(`${added} añadidas`, "ok");
   }
+  setHeight(Math.max(360, document.documentElement.scrollHeight));
 }
 
 function bytesToBase64(bytes) {
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(
-      null,
-      bytes.subarray(i, Math.min(i + chunk, bytes.length))
-    );
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunk, bytes.length)));
   }
   return btoa(binary);
 }
@@ -201,17 +198,28 @@ async function sendNext() {
   if (!queue.length) {
     sending = false;
     currentId = null;
+    batchDone = true;
+    const doneKey = `${batchIndex}:${allFiles.length}`;
+    if (announcedDoneKey !== doneKey) {
+      announcedDoneKey = doneKey;
+      setValue({
+        batch_complete: true,
+        batch_index: batchIndex,
+        batch_number: batchIndex + 1,
+        total_batches: totalBatches(),
+      });
+    }
     render();
-    setMsg("Tanda añadida.", "ok");
+    setMsg(`Tanda ${batchIndex + 1} lista para procesar.`, "ok");
+    setHeight(Math.max(360, document.documentElement.scrollHeight));
     return;
   }
 
   sending = true;
   render();
-
   const file = queue[0];
   currentId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  setMsg(`Subiendo ${queue.length} restante${queue.length === 1 ? "" : "s"}…`, "muted");
+  setMsg(`Subiendo ${queue.length} restantes de esta tanda…`, "muted");
 
   try {
     const buffer = new Uint8Array(await file.arrayBuffer());
@@ -221,6 +229,9 @@ async function sendNext() {
       size: file.size,
       mime: file.type,
       base64: bytesToBase64(buffer),
+      batch_index: batchIndex,
+      batch_number: batchIndex + 1,
+      total_batches: totalBatches(),
     });
   } catch (error) {
     queue.shift();
@@ -230,36 +241,54 @@ async function sendNext() {
   }
 }
 
-function startSending() {
-  if (!selected.length || sending) return;
-  queue = selected.slice();
-  selected = [];
-  render();
+function startBatch() {
+  if (sending || batchDone) return;
+  const current = currentBatchFiles();
+  if (!current.length) return;
+  queue = current.slice();
   sendNext();
+}
+
+function advanceBatch() {
+  if (batchIndex + 1 >= totalBatches()) return;
+  batchIndex++;
+  queue = [];
+  sending = false;
+  batchDone = false;
+  currentId = null;
+  announcedDoneKey = "";
+  startBatch();
 }
 
 window.addEventListener("message", event => {
   if (!event.data || event.data.type !== MSG.RENDER) return;
-
   const args = event.data.args || {};
   config = { ...config, ...args };
 
-  const maxFiles = Number(config.max_files || 18);
-  const maxMb = Number(config.max_file_mb || 12);
-  const totalMb = Number(config.max_total_mb || 80);
-  helpEl.textContent = `Hasta ${maxFiles} archivos · ${maxMb} MB/archivo · ${totalMb} MB/tanda`;
+  helpEl.textContent = `Selecciona todas las que quieras · ${config.max_file_mb} MB/archivo · se separan en tandas de ${config.batch_size}`;
 
   const token = config.reset_token;
   if (resetToken === null) {
     resetToken = token;
   } else if (token !== resetToken) {
     resetToken = token;
-    selected = [];
+    allFiles = [];
+    batchIndex = 0;
     queue = [];
     sending = false;
+    batchDone = false;
     currentId = null;
+    announcedDoneKey = "";
     render();
     setMsg("", "muted");
+  }
+
+  const advance = config.advance_token;
+  if (lastAdvanceToken === null) {
+    lastAdvanceToken = advance;
+  } else if (advance !== lastAdvanceToken) {
+    lastAdvanceToken = advance;
+    advanceBatch();
   }
 
   const ack = config.ack_id || "";
@@ -273,36 +302,18 @@ window.addEventListener("message", event => {
   }
 
   render();
-  setHeight(Math.max(170, document.documentElement.scrollHeight));
+  setHeight(Math.max(360, document.documentElement.scrollHeight));
 });
 
-drop.addEventListener("click", () => {
-  if (!sending) picker.click();
-});
-
-picker.addEventListener("change", event => {
-  acceptFiles(event.target.files);
-});
-
-drop.addEventListener("dragover", event => {
-  event.preventDefault();
-  if (!sending) drop.classList.add("drag");
-});
-
-drop.addEventListener("dragleave", () => {
-  drop.classList.remove("drag");
-});
-
-drop.addEventListener("drop", event => {
-  event.preventDefault();
-  drop.classList.remove("drag");
-  if (!sending) acceptFiles(event.dataTransfer.files);
-});
-
-send.addEventListener("click", startSending);
+drop.addEventListener("click", () => { if (!sending && !batchDone) picker.click(); });
+picker.addEventListener("change", event => acceptFiles(event.target.files));
+drop.addEventListener("dragover", event => { event.preventDefault(); if (!sending && !batchDone) drop.classList.add("drag"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+drop.addEventListener("drop", event => { event.preventDefault(); drop.classList.remove("drag"); if (!sending && !batchDone) acceptFiles(event.dataTransfer.files); });
+send.addEventListener("click", startBatch);
 
 setReady();
-setHeight(170);
+setHeight(360);
 </script>
 </body>
 </html>
