@@ -2,21 +2,21 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<script src="https://unpkg.com/streamlit-component-lib/dist/index.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
-body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#202124; background:transparent; }
+html,body { margin:0; padding:0; background:transparent; }
+body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#202124; }
 .wrap { width:100%; }
 .drop { border:1px dashed #aaa; border-radius:9px; padding:17px 15px; text-align:center; background:#fafafa; cursor:pointer; transition:.15s; }
 .drop:hover,.drop.drag { border-color:#666; background:#f3f3f3; }
-.drop.disabled { opacity:.55; cursor:default; }
+.drop.disabled { opacity:.5; cursor:default; }
 strong { display:block; margin-bottom:5px; font-size:14px; }
 small { color:#666; }
-.msg { margin-top:8px; font-size:12px; min-height:17px; }
+.msg { margin-top:8px; font-size:12px; min-height:18px; }
 .ok { color:#237a42; } .err { color:#9d2929; } .muted { color:#666; }
-.files { margin-top:8px; max-height:190px; overflow:auto; }
+.files { margin-top:8px; max-height:180px; overflow:auto; }
 .file { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:6px 2px; border-bottom:1px solid #e8e8e8; font-size:12px; }
 .name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .size { color:#666; white-space:nowrap; }
@@ -30,8 +30,8 @@ button:disabled { opacity:.4; cursor:default; }
 <div class="wrap">
   <div id="drop" class="drop">
     <strong>Selecciona o arrastra tus cartas</strong>
-    <small id="help">Hasta 18 archivos</small>
-    <input id="picker" type="file" multiple hidden>
+    <small id="help">Hasta 18 archivos · 12 MB/archivo</small>
+    <input id="picker" type="file" multiple hidden accept=".jpg,.jpeg,.png,image/jpeg,image/png">
   </div>
   <div id="msg" class="msg muted"></div>
   <div id="files" class="files"></div>
@@ -41,14 +41,59 @@ button:disabled { opacity:.4; cursor:default; }
   </div>
 </div>
 <script>
+"use strict";
+
+// Minimal Streamlit Components v1 protocol.
+// No dependency on streamlit-component-lib is used because the current
+// package is ESM and cannot be loaded with a classic <script> tag.
+
+const MSG = {
+  READY: "streamlit:componentReady",
+  RENDER: "streamlit:render",
+  VALUE: "streamlit:setComponentValue",
+  HEIGHT: "streamlit:setFrameHeight",
+};
+
+function sendMessage(type, data = {}) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type,
+    ...data,
+  }, "*");
+}
+
+function setReady() {
+  sendMessage(MSG.READY, { apiVersion: 1 });
+}
+
+function setHeight(height) {
+  sendMessage(MSG.HEIGHT, { height });
+}
+
+function setValue(value) {
+  sendMessage(MSG.VALUE, {
+    value,
+    dataType: "json",
+  });
+}
+
 const drop = document.getElementById("drop");
 const picker = document.getElementById("picker");
 const msg = document.getElementById("msg");
 const filesEl = document.getElementById("files");
 const send = document.getElementById("send");
 const countEl = document.getElementById("count");
+const helpEl = document.getElementById("help");
 
-let config = {max_files:18,max_file_mb:12,max_total_mb:null,accepted_types:["jpg","jpeg","png"]};
+let config = {
+  max_files: 18,
+  max_file_mb: 12,
+  max_total_mb: 80,
+  accepted_types: ["jpg", "jpeg", "png"],
+  ack_id: "",
+  reset_token: 0,
+};
+
 let selected = [];
 let queue = [];
 let sending = false;
@@ -56,106 +101,208 @@ let currentId = null;
 let lastAck = "";
 let resetToken = null;
 
-function fmtMb(bytes) { return (bytes/1024/1024).toFixed(1) + " MB"; }
-function setMsg(text, cls="muted") { msg.className="msg "+cls; msg.textContent=text; }
-function esc(s) { return s.replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'})[c]); }
+function fmtMb(bytes) {
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+function setMsg(text, cls = "muted") {
+  msg.className = "msg " + cls;
+  msg.textContent = text;
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>\"']/g, ch => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[ch]);
+}
+
 function render() {
-  filesEl.innerHTML="";
-  for (const f of selected) {
-    const row=document.createElement("div"); row.className="file";
-    row.innerHTML=`<span class="name">${esc(f.name)}</span><span class="size">${fmtMb(f.size)}</span>`;
+  filesEl.innerHTML = "";
+  selected.forEach(file => {
+    const row = document.createElement("div");
+    row.className = "file";
+    row.innerHTML = `<span class="name">${escapeHtml(file.name)}</span><span class="size">${fmtMb(file.size)}</span>`;
     filesEl.appendChild(row);
-  }
-  countEl.textContent=`${selected.length} seleccionada${selected.length===1?'':'s'}`;
-  send.disabled=selected.length===0 || sending;
+  });
+
+  countEl.textContent = `${selected.length} seleccionada${selected.length === 1 ? "" : "s"}`;
+  send.disabled = selected.length === 0 || sending;
   drop.classList.toggle("disabled", sending);
 }
 
 function acceptFiles(fileList) {
   if (sending) return;
-  const incoming=Array.from(fileList||[]);
+
+  const incoming = Array.from(fileList || []);
   if (!incoming.length) return;
 
-  const room=Math.max(0, Number(config.max_files||18)-selected.length);
-  let added=0, rejected=[];
-  const maxBytes=Number(config.max_file_mb||12)*1024*1024;
-  let total=selected.reduce((n,f)=>n+f.size,0);
+  const maxFiles = Number(config.max_files || 18);
+  const maxFileBytes = Number(config.max_file_mb || 12) * 1024 * 1024;
+  const maxTotalBytes = Number(config.max_total_mb || 80) * 1024 * 1024;
+
+  let added = 0;
+  const rejected = [];
+  let total = selected.reduce((sum, file) => sum + file.size, 0);
 
   for (const file of incoming) {
-    if (selected.length+added>=Number(config.max_files||18)) { rejected.push(`${file.name}: límite de archivos`); continue; }
-    const ext=(file.name.split('.').pop()||'').toLowerCase();
-    if (!config.accepted_types.includes(ext)) { rejected.push(`${file.name}: formato no válido`); continue; }
-    if (file.size>maxBytes) { rejected.push(`${file.name}: supera ${config.max_file_mb} MB`); continue; }
-    selected.push(file); total+=file.size; added++;
+    if (selected.length >= maxFiles) {
+      rejected.push(`${file.name}: máximo ${maxFiles}`);
+      continue;
+    }
+
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!config.accepted_types.includes(ext)) {
+      rejected.push(`${file.name}: formato no válido`);
+      continue;
+    }
+
+    if (file.size > maxFileBytes) {
+      rejected.push(`${file.name}: supera ${config.max_file_mb} MB`);
+      continue;
+    }
+
+    if (total + file.size > maxTotalBytes) {
+      rejected.push(`${file.name}: supera ${config.max_total_mb} MB de la tanda`);
+      continue;
+    }
+
+    selected.push(file);
+    total += file.size;
+    added++;
   }
 
   render();
-  if (rejected.length) setMsg(`${added} añadidas · ${rejected.length} rechazadas`, "err");
-  else setMsg(`${added} añadida${added===1?'':'s'}`, "ok");
-  picker.value="";
+  picker.value = "";
+
+  if (rejected.length) {
+    setMsg(`${added} añadidas · ${rejected.length} rechazadas`, "err");
+  } else if (added) {
+    setMsg(`${added} añadida${added === 1 ? "" : "s"}`, "ok");
+  }
 }
 
 function bytesToBase64(bytes) {
-  let binary="";
-  const chunk=0x8000;
-  for(let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode.apply(null, bytes.subarray(i,Math.min(i+chunk,bytes.length)));
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, Math.min(i + chunk, bytes.length))
+    );
+  }
   return btoa(binary);
 }
 
 async function sendNext() {
   if (!queue.length) {
-    sending=false; currentId=null; render();
-    setMsg("Tanda añadida a la aplicación.","ok");
+    sending = false;
+    currentId = null;
+    render();
+    setMsg("Tanda añadida.", "ok");
     return;
   }
-  sending=true; render();
-  const file=queue[0];
-  currentId=`${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  setMsg(`Subiendo ${queue.length} restante${queue.length===1?'':'s'}…`,"muted");
-  const buffer=new Uint8Array(await file.arrayBuffer());
-  const payload={upload_id:currentId,name:file.name,size:file.size,mime:file.type,base64:bytesToBase64(buffer)};
-  Streamlit.setComponentValue(payload);
+
+  sending = true;
+  render();
+
+  const file = queue[0];
+  currentId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  setMsg(`Subiendo ${queue.length} restante${queue.length === 1 ? "" : "s"}…`, "muted");
+
+  try {
+    const buffer = new Uint8Array(await file.arrayBuffer());
+    setValue({
+      upload_id: currentId,
+      name: file.name,
+      size: file.size,
+      mime: file.type,
+      base64: bytesToBase64(buffer),
+    });
+  } catch (error) {
+    queue.shift();
+    currentId = null;
+    setMsg(`No se pudo leer ${file.name}.`, "err");
+    sendNext();
+  }
 }
 
 function startSending() {
   if (!selected.length || sending) return;
-  queue=selected.slice();
-  selected=[];
+  queue = selected.slice();
+  selected = [];
   render();
   sendNext();
 }
 
-Streamlit.events.addEventListener(Streamlit.RENDER_EVENT,event=>{
-  config=event.detail.args||config;
-  document.getElementById("help").textContent=`Hasta ${config.max_files||18} archivos · ${config.max_file_mb||12} MB/archivo`;
+window.addEventListener("message", event => {
+  if (!event.data || event.data.type !== MSG.RENDER) return;
 
-  const token=config.reset_token;
-  if(resetToken===null) resetToken=token;
-  else if(token!==resetToken){ resetToken=token; selected=[]; queue=[]; sending=false; currentId=null; render(); setMsg("", "muted"); }
+  const args = event.data.args || {};
+  config = { ...config, ...args };
 
-  const ack=config.ack_id||"";
-  if(ack && ack!==lastAck){
-    lastAck=ack;
-    if(currentId===ack){
+  const maxFiles = Number(config.max_files || 18);
+  const maxMb = Number(config.max_file_mb || 12);
+  const totalMb = Number(config.max_total_mb || 80);
+  helpEl.textContent = `Hasta ${maxFiles} archivos · ${maxMb} MB/archivo · ${totalMb} MB/tanda`;
+
+  const token = config.reset_token;
+  if (resetToken === null) {
+    resetToken = token;
+  } else if (token !== resetToken) {
+    resetToken = token;
+    selected = [];
+    queue = [];
+    sending = false;
+    currentId = null;
+    render();
+    setMsg("", "muted");
+  }
+
+  const ack = config.ack_id || "";
+  if (ack && ack !== lastAck) {
+    lastAck = ack;
+    if (currentId === ack) {
       queue.shift();
-      currentId=null;
+      currentId = null;
       sendNext();
     }
   }
-  Streamlit.setFrameHeight(265);
-  Streamlit.setComponentReady();
+
   render();
+  setHeight(Math.max(170, document.documentElement.scrollHeight));
 });
 
-drop.addEventListener("click",()=>{ if(!sending) picker.click(); });
-picker.addEventListener("change",e=>acceptFiles(e.target.files));
-drop.addEventListener("dragover",e=>{e.preventDefault(); if(!sending) drop.classList.add("drag");});
-drop.addEventListener("dragleave",()=>drop.classList.remove("drag"));
-drop.addEventListener("drop",e=>{e.preventDefault(); drop.classList.remove("drag"); if(!sending) acceptFiles(e.dataTransfer.files);});
-send.addEventListener("click",startSending);
+drop.addEventListener("click", () => {
+  if (!sending) picker.click();
+});
 
-Streamlit.setComponentReady();
-Streamlit.setFrameHeight(265);
+picker.addEventListener("change", event => {
+  acceptFiles(event.target.files);
+});
+
+drop.addEventListener("dragover", event => {
+  event.preventDefault();
+  if (!sending) drop.classList.add("drag");
+});
+
+drop.addEventListener("dragleave", () => {
+  drop.classList.remove("drag");
+});
+
+drop.addEventListener("drop", event => {
+  event.preventDefault();
+  drop.classList.remove("drag");
+  if (!sending) acceptFiles(event.dataTransfer.files);
+});
+
+send.addEventListener("click", startSending);
+
+setReady();
+setHeight(170);
 </script>
 </body>
 </html>
