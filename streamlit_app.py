@@ -545,10 +545,22 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                         ) as zf:
                             nombres_usados = set()
 
-                            for i, item in enumerate(
-                                st.session_state.lote,
-                                start=1,
-                            ):
+                            for item in st.session_state.lote:
+                                nombre_original = item["name"]
+                                ext = Path(nombre_original).suffix.lower()
+
+                                if ext not in {".jpg", ".jpeg", ".png"}:
+                                    raise ValueError(
+                                        f"Formato no permitido para {nombre_original}"
+                                    )
+
+                                if nombre_original.lower() in nombres_usados:
+                                    raise ValueError(
+                                        f"Hay dos archivos con el mismo nombre: {nombre_original}"
+                                    )
+
+                                nombres_usados.add(nombre_original.lower())
+
                                 img = cargar_imagen(item["path"])
                                 final, _, _ = recortar_y_redimensionar(
                                     img,
@@ -556,27 +568,30 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                                     px_alto,
                                     st.session_state.offset_porcentaje,
                                 )
-                                final = preparar_rgb(final)
-
-                                base = nombre_seguro(item["name"])
-                                salida = f"{i:02d}_{base}.jpg"
-                                contador = 2
-
-                                while salida.lower() in nombres_usados:
-                                    salida = f"{i:02d}_{base}_{contador}.jpg"
-                                    contador += 1
-
-                                nombres_usados.add(salida.lower())
 
                                 out = io.BytesIO()
-                                final.save(
-                                    out,
-                                    format="JPEG",
-                                    quality=95,
-                                    optimize=True,
-                                    dpi=(st.session_state.ppp, st.session_state.ppp),
-                                )
-                                zf.writestr(salida, out.getvalue())
+
+                                if ext in {".jpg", ".jpeg"}:
+                                    final = preparar_rgb(final)
+                                    final.save(
+                                        out,
+                                        format="JPEG",
+                                        quality=95,
+                                        optimize=True,
+                                        dpi=(st.session_state.ppp, st.session_state.ppp),
+                                    )
+                                else:
+                                    # Mantener PNG como PNG y conservar exactamente
+                                    # el nombre original dentro del ZIP.
+                                    final.save(
+                                        out,
+                                        format="PNG",
+                                        optimize=True,
+                                        dpi=(st.session_state.ppp, st.session_state.ppp),
+                                    )
+
+                                # El nombre dentro del ZIP es EXACTAMENTE el original.
+                                zf.writestr(nombre_original, out.getvalue())
 
                             zf.writestr(
                                 "INFORME.txt",
