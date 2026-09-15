@@ -1,9 +1,9 @@
+import base64
 import io
 import json
 import re
 import shutil
 import tempfile
-import base64
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +14,9 @@ from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 from uploader_component import batch_uploader
 
 
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
 st.set_page_config(
     page_title="Maquetador de Cartas",
     page_icon="🃏",
@@ -38,18 +41,20 @@ MAX_FOTOS = 18
 MAX_MB_POR_FOTO = 12
 
 
-
+# ============================================================
+# ESTADO
+# ============================================================
 def init_state():
     defaults = {
         "nombre_proyecto": "Nuevo Proyecto",
         "tipo_carta": list(MEDIDAS_CARTAS.keys())[0],
         "ppp": 300,
         "nombre_input": "Nuevo Proyecto",
-        "tipo_input": list(MEDIDAS_CARTAS.keys())[0],
-        "ppp_input": list(PPP_OPCIONES.keys())[0],
         "offset_porcentaje": 0.0,
         "fecha_creacion": datetime.now().strftime("%Y-%m-%d_%H-%M"),
         "json_importado": "",
+        "gestion_panel": None,
+        "confirmar_nuevo": False,
         "ref_path": None,
         "ref_name": "",
         "ref_uploader_version": 0,
@@ -73,6 +78,9 @@ def init_state():
 init_state()
 
 
+# ============================================================
+# UTILIDADES
+# ============================================================
 def nueva_temporal_dir():
     old_dir = Path(st.session_state.tmp_dir)
     if old_dir.exists():
@@ -82,23 +90,26 @@ def nueva_temporal_dir():
 
 def reset_project():
     nueva_temporal_dir()
+
     st.session_state.nombre_proyecto = "Nuevo Proyecto"
     st.session_state.tipo_carta = list(MEDIDAS_CARTAS.keys())[0]
     st.session_state.ppp = 300
     st.session_state.nombre_input = "Nuevo Proyecto"
-    st.session_state.tipo_input = list(MEDIDAS_CARTAS.keys())[0]
-    st.session_state.ppp_input = list(PPP_OPCIONES.keys())[0]
     st.session_state.offset_porcentaje = 0.0
     st.session_state.fecha_creacion = datetime.now().strftime("%Y-%m-%d_%H-%M")
     st.session_state.json_importado = ""
+    st.session_state.gestion_panel = None
+    st.session_state.confirmar_nuevo = False
+
     st.session_state.ref_path = None
     st.session_state.ref_name = ""
     st.session_state.ref_uploader_version += 1
+
     st.session_state.lote = []
     st.session_state.lote_version += 1
     st.session_state.lote_ack_id = ""
     st.session_state.lote_reset_token += 1
-    st.session_state.lote_advance_token = 0
+    st.session_state.lote_advance_token += 1
     st.session_state.lote_numero = 1
     st.session_state.lote_total_tandas = 0
     st.session_state.lote_lista = False
@@ -106,9 +117,29 @@ def reset_project():
     st.session_state.zip_result = None
 
 
+def limpiar_tanda_actual(avanzar=False):
+    for item in st.session_state.lote:
+        Path(item["path"]).unlink(missing_ok=True)
+
+    st.session_state.lote = []
+    st.session_state.lote_version += 1
+    st.session_state.lote_ack_id = ""
+    st.session_state.last_upload_id = ""
+    st.session_state.lote_lista = False
+    st.session_state.zip_result = None
+
+    if avanzar:
+        st.session_state.lote_numero += 1
+        st.session_state.lote_advance_token += 1
+    else:
+        st.session_state.lote_numero = 1
+        st.session_state.lote_total_tandas = 0
+        st.session_state.lote_reset_token += 1
+
+
 def nombre_seguro(nombre: str) -> str:
     stem = Path(nombre).stem.strip()
-    stem = re.sub(r"[^\w\-\.]+", "_", stem, flags=re.UNICODE)
+    stem = re.sub(r"[^\w\-.]+", "_", stem, flags=re.UNICODE)
     stem = re.sub(r"_+", "_", stem).strip("._")
     return stem or "carta"
 
@@ -154,7 +185,10 @@ def preview_con_box(img, box):
     max_w = 1000
     if vista.width > max_w:
         ratio = max_w / vista.width
-        vista = vista.resize((max_w, max(1, int(vista.height * ratio))), Image.Resampling.LANCZOS)
+        vista = vista.resize(
+            (max_w, max(1, int(vista.height * ratio))),
+            Image.Resampling.LANCZOS,
+        )
 
     escala_x = vista.width / img.width
     escala_y = vista.height / img.height
@@ -166,7 +200,11 @@ def preview_con_box(img, box):
     )
 
     draw = ImageDraw.Draw(vista)
-    draw.rectangle(rect, outline=(255, 70, 70), width=max(2, int(round(vista.width / 500))))
+    draw.rectangle(
+        rect,
+        outline=(255, 70, 70),
+        width=max(2, int(round(vista.width / 500))),
+    )
     return vista
 
 
@@ -191,164 +229,179 @@ def guardar_upload(uploaded_file, destino: Path):
         f.write(uploaded_file.getbuffer())
 
 
+def proyecto_json():
+    return {
+        "version": 2,
+        "nombre_proyecto": st.session_state.nombre_proyecto,
+        "fecha_creacion": st.session_state.fecha_creacion,
+        "tipo_carta": st.session_state.tipo_carta,
+        "ppp": st.session_state.ppp,
+        "offset_porcentaje": st.session_state.offset_porcentaje,
+    }
+
+
+# ============================================================
+# CABECERA + AJUSTES SIEMPRE VISIBLES
+# ============================================================
 st.title("🃏 Maquetador de Cartas")
-st.caption("Configura el proyecto, ajusta el encuadre y procesa tus cartas por tandas.")
+st.caption("Prepara tus cartas, ajusta el recorte y descárgalas por tandas.")
 
-
-with st.expander("1 · Proyecto", expanded=False):
-    archivo_json = st.file_uploader(
-        "Cargar configuración (.json)",
-        type=["json"],
-        key="json_uploader",
-        max_upload_size=2,
+col1, col2 = st.columns(2)
+with col1:
+    opciones_tipo = list(MEDIDAS_CARTAS.keys())
+    indice_tipo = opciones_tipo.index(st.session_state.tipo_carta)
+    st.session_state.tipo_carta = st.selectbox(
+        "Tamaño de carta",
+        opciones_tipo,
+        index=indice_tipo,
     )
 
-    if archivo_json is not None and archivo_json.name != st.session_state.json_importado:
-        try:
-            datos = json.loads(archivo_json.getvalue().decode("utf-8"))
-            tipo = datos.get("tipo_carta", list(MEDIDAS_CARTAS.keys())[0])
-            if tipo not in MEDIDAS_CARTAS:
-                tipo = list(MEDIDAS_CARTAS.keys())[0]
-            ppp = int(datos.get("ppp", 300))
-            if ppp not in PPP_OPCIONES.values():
-                ppp = 300
-            offset = max(-50.0, min(50.0, float(datos.get("offset_porcentaje", 0.0))))
-            nombre = str(datos.get("nombre_proyecto", "Proyecto Importado"))
+with col2:
+    opciones_ppp = list(PPP_OPCIONES.keys())
+    etiqueta_ppp = next(
+        etiqueta for etiqueta, valor in PPP_OPCIONES.items()
+        if valor == st.session_state.ppp
+    )
+    etiqueta_ppp = st.selectbox(
+        "Resolución",
+        opciones_ppp,
+        index=opciones_ppp.index(etiqueta_ppp),
+    )
+    st.session_state.ppp = PPP_OPCIONES[etiqueta_ppp]
 
-            st.session_state.nombre_proyecto = nombre
-            st.session_state.tipo_carta = tipo
-            st.session_state.ppp = ppp
-            st.session_state.offset_porcentaje = offset
-            st.session_state.nombre_input = nombre
-            st.session_state.tipo_input = tipo
-            st.session_state.ppp_input = next(k for k, v in PPP_OPCIONES.items() if v == ppp)
-            st.session_state.fecha_creacion = datos.get("fecha_creacion", st.session_state.fecha_creacion)
-            st.session_state.json_importado = archivo_json.name
-            st.rerun()
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
-            st.error(f"No se pudo cargar el JSON: {exc}")
+px_ancho, px_alto = dimensiones_px(
+    st.session_state.tipo_carta,
+    st.session_state.ppp,
+)
 
-    st.session_state.nombre_proyecto = st.text_input("Nombre", key="nombre_input")
+cm_ancho, cm_alto = MEDIDAS_CARTAS[st.session_state.tipo_carta]
+st.caption(
+    f"Salida: {cm_ancho:.2f} × {cm_alto:.2f} cm · {px_ancho} × {px_alto} px"
+)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        tipo = st.selectbox("Tamaño", list(MEDIDAS_CARTAS.keys()), key="tipo_input")
-    with col2:
-        ppp_label = st.selectbox("Resolución", list(PPP_OPCIONES.keys()), key="ppp_input")
 
-    st.session_state.tipo_carta = tipo
-    st.session_state.ppp = PPP_OPCIONES[ppp_label]
+# ============================================================
+# 1 · GESTIÓN DEL PROYECTO
+# ============================================================
+with st.expander("1 · Proyecto", expanded=False):
+    b1, b2, b3 = st.columns(3)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Nuevo proyecto", use_container_width=True):
-            reset_project()
-            st.rerun()
-    with c2:
-        proyecto_json = {
-            "version": 2,
-            "nombre_proyecto": st.session_state.nombre_proyecto,
-            "fecha_creacion": st.session_state.fecha_creacion,
-            "tipo_carta": st.session_state.tipo_carta,
-            "ppp": st.session_state.ppp,
-            "offset_porcentaje": st.session_state.offset_porcentaje,
-        }
+    with b1:
+        if st.button("Nuevo", use_container_width=True):
+            st.session_state.gestion_panel = "nuevo"
+            st.session_state.confirmar_nuevo = True
+
+    with b2:
+        if st.button("Cargar", use_container_width=True):
+            st.session_state.gestion_panel = "cargar"
+            st.session_state.json_importado = ""
+
+    with b3:
+        if st.button("Grabar", use_container_width=True):
+            st.session_state.gestion_panel = "grabar"
+
+    if st.session_state.gestion_panel == "nuevo":
+        st.warning("Se borrará el proyecto actual, incluidas las fotos cargadas.")
+        n1, n2 = st.columns(2)
+        with n1:
+            if st.button("Sí, borrar todo", type="primary", use_container_width=True):
+                reset_project()
+                st.rerun()
+        with n2:
+            if st.button("Cancelar", use_container_width=True):
+                st.session_state.gestion_panel = None
+                st.session_state.confirmar_nuevo = False
+                st.rerun()
+
+    elif st.session_state.gestion_panel == "cargar":
+        archivo_json = st.file_uploader(
+            "Selecciona un proyecto (.json)",
+            type=["json"],
+            key="json_uploader",
+            max_upload_size=2,
+        )
+
+        if archivo_json is not None and archivo_json.name != st.session_state.json_importado:
+            try:
+                datos = json.loads(archivo_json.getvalue().decode("utf-8"))
+
+                tipo = datos.get("tipo_carta", list(MEDIDAS_CARTAS.keys())[0])
+                if tipo not in MEDIDAS_CARTAS:
+                    tipo = list(MEDIDAS_CARTAS.keys())[0]
+
+                ppp = int(datos.get("ppp", 300))
+                if ppp not in PPP_OPCIONES.values():
+                    ppp = 300
+
+                offset = max(
+                    -50.0,
+                    min(50.0, float(datos.get("offset_porcentaje", 0.0))),
+                )
+
+                st.session_state.nombre_proyecto = str(
+                    datos.get("nombre_proyecto", "Proyecto Importado")
+                )
+                st.session_state.tipo_carta = tipo
+                st.session_state.ppp = ppp
+                st.session_state.offset_porcentaje = offset
+                st.session_state.fecha_creacion = datos.get(
+                    "fecha_creacion",
+                    st.session_state.fecha_creacion,
+                )
+                st.session_state.json_importado = archivo_json.name
+                st.session_state.gestion_panel = None
+
+                st.success(
+                    f"Proyecto cargado: {st.session_state.nombre_proyecto}"
+                )
+                st.rerun()
+
+            except (
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                st.error(f"No se pudo cargar el proyecto: {exc}")
+
+    elif st.session_state.gestion_panel == "grabar":
+        st.session_state.nombre_proyecto = st.text_input(
+            "Nombre del proyecto",
+            value=st.session_state.nombre_proyecto,
+            key="nombre_input",
+        )
+
         st.download_button(
-            "Guardar JSON",
-            data=json.dumps(proyecto_json, ensure_ascii=False, indent=2),
-            file_name=f"{nombre_seguro(st.session_state.nombre_proyecto)}_{datetime.now().strftime('%Y%m%d')}.json",
+            "Guardar proyecto (.json)",
+            data=json.dumps(
+                proyecto_json(),
+                ensure_ascii=False,
+                indent=2,
+            ),
+            file_name=(
+                f"{nombre_seguro(st.session_state.nombre_proyecto)}_"
+                f"{datetime.now().strftime('%Y%m%d')}.json"
+            ),
             mime="application/json",
             use_container_width=True,
         )
 
 
-px_ancho, px_alto = dimensiones_px(st.session_state.tipo_carta, st.session_state.ppp)
-
-
-with st.expander("2 · Encuadre de referencia", expanded=False):
-    cm_ancho, cm_alto = MEDIDAS_CARTAS[st.session_state.tipo_carta]
-    st.caption(f"Salida: {px_ancho} × {px_alto} px · {cm_ancho:.2f} × {cm_alto:.2f} cm")
-
-    ref_file = st.file_uploader(
-        f"Subir foto de referencia · máximo {MAX_MB_POR_FOTO} MB",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=False,
-        key=f"ref_uploader_{st.session_state.ref_uploader_version}",
-        max_upload_size=MAX_MB_POR_FOTO,
+# ============================================================
+# 2 · SUBIR FOTOS EN TANDAS
+# ============================================================
+with st.expander("2 · Subir fotos en tandas", expanded=True):
+    st.write(
+        f"Selecciona todas las cartas que quieras. Se organizarán automáticamente "
+        f"en tandas de {MAX_FOTOS}. Solo se envía al servidor la tanda que estés trabajando."
     )
+    st.caption(f"JPG o PNG · máximo {MAX_MB_POR_FOTO} MB por foto")
 
-    if ref_file is not None and ref_file.name != st.session_state.ref_name:
-        ref_path = Path(st.session_state.tmp_dir) / f"referencia{Path(ref_file.name).suffix.lower()}"
-        guardar_upload(ref_file, ref_path)
-        st.session_state.ref_path = str(ref_path)
-        st.session_state.ref_name = ref_file.name
-
-    if st.session_state.ref_path:
-        try:
-            img_ref = cargar_imagen(st.session_state.ref_path)
-            _, box0, eje = recortar_y_redimensionar(img_ref, px_ancho, px_alto, 0.0)
-
-            if eje == "X":
-                st.caption("Recorte horizontal · negativo = izquierda · positivo = derecha")
-            elif eje == "Y":
-                st.caption("Recorte vertical · negativo = abajo · positivo = arriba")
-            else:
-                st.caption("La proporción ya coincide: no hay recorte.")
-
-            st.session_state.offset_porcentaje = st.slider(
-                "Desplazamiento",
-                -50.0,
-                50.0,
-                float(st.session_state.offset_porcentaje),
-                0.5,
-                disabled=eje is None,
-                key="offset_slider",
-            )
-
-            previa, box, _ = recortar_y_redimensionar(
-                img_ref, px_ancho, px_alto, st.session_state.offset_porcentaje
-            )
-            original_marcada = preview_con_box(img_ref, box)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.image(original_marcada, caption="Encuadre", use_container_width=True)
-            with col2:
-                st.image(previa, caption="Resultado", use_container_width=True)
-
-            if st.button("Quitar referencia", use_container_width=True):
-                Path(st.session_state.ref_path).unlink(missing_ok=True)
-                st.session_state.ref_path = None
-                st.session_state.ref_name = ""
-                st.session_state.offset_porcentaje = 0.0
-                st.session_state.ref_uploader_version += 1
-                st.rerun()
-        except (OSError, ValueError, UnidentifiedImageError) as exc:
-            st.error(f"No se pudo abrir la referencia: {exc}")
-    else:
-        st.info("Sube una foto para ajustar el recorte.")
-
-
-with st.expander("3 · Tandas de cartas", expanded=True):
-    total_actual = len(st.session_state.lote)
-    lote_lista = st.session_state.lote_lista
     total_tandas = st.session_state.lote_total_tandas
     numero_tanda = st.session_state.lote_numero
 
     if total_tandas:
-        st.markdown(
-            f"### Tanda {numero_tanda} de {total_tandas}"
-        )
-        st.progress(
-            min(1.0, total_actual / MAX_FOTOS),
-            text=f"{total_actual} / {MAX_FOTOS} fotos"
-        )
-    else:
-        st.caption(
-            f"Selecciona todas las cartas que quieras. "
-            f"Se dividirán automáticamente en tandas de {MAX_FOTOS}. "
-            f"Máximo {MAX_MB_POR_FOTO} MB por foto."
-        )
+        st.markdown(f"**Tanda {numero_tanda} de {total_tandas}**")
 
     upload = batch_uploader(
         key="batch_uploader",
@@ -378,24 +431,7 @@ with st.expander("3 · Tandas de cartas", expanded=True):
                 )
 
                 if len(raw) > MAX_MB_POR_FOTO * 1024 * 1024:
-                    raise ValueError(
-                        f"La imagen supera {MAX_MB_POR_FOTO} MB"
-                    )
-
-                ocupados = {
-                    item["name"].lower()
-                    for item in st.session_state.lote
-                }
-
-                name = name_original
-                if name.lower() in ocupados:
-                    base = Path(name).stem
-                    contador = 2
-                    candidato = f"{base}_{contador}{ext}"
-                    while candidato.lower() in ocupados:
-                        contador += 1
-                        candidato = f"{base}_{contador}{ext}"
-                    name = candidato
+                    raise ValueError(f"La imagen supera {MAX_MB_POR_FOTO} MB")
 
                 numero = len(st.session_state.lote) + 1
                 destino = (
@@ -403,14 +439,14 @@ with st.expander("3 · Tandas de cartas", expanded=True):
                     / (
                         f"t{int(upload.get('batch_number', numero_tanda)):02d}_"
                         f"{numero:02d}_"
-                        f"{nombre_seguro(Path(name).stem)}{ext}"
+                        f"{nombre_seguro(Path(name_original).stem)}{ext}"
                     )
                 )
 
                 destino.write_bytes(raw)
 
                 st.session_state.lote.append({
-                    "name": name,
+                    "name": name_original,
                     "path": str(destino),
                     "size": len(raw),
                 })
@@ -427,7 +463,11 @@ with st.expander("3 · Tandas de cartas", expanded=True):
                 st.session_state.zip_result = None
                 st.rerun()
 
-            except (ValueError, OSError, base64.binascii.Error) as exc:
+            except (
+                ValueError,
+                OSError,
+                base64.binascii.Error,
+            ) as exc:
                 st.session_state.last_upload_id = upload_id
                 st.session_state.lote_ack_id = upload_id
                 st.error(
@@ -443,249 +483,244 @@ with st.expander("3 · Tandas de cartas", expanded=True):
             )
             st.session_state.lote_lista = True
 
-    # --------------------------------------------------------
-    # Estado de la tanda actual
-    # --------------------------------------------------------
+    # Estado actual
     if st.session_state.lote:
         total_actual = len(st.session_state.lote)
-        total_tandas = st.session_state.lote_total_tandas
         numero_tanda = st.session_state.lote_numero
+        total_tandas = st.session_state.lote_total_tandas
 
         if st.session_state.lote_lista:
-            if numero_tanda < total_tandas:
-                st.success(
-                    f"Tanda {numero_tanda} lista · quedan "
-                    f"{total_tandas - numero_tanda} tandas."
-                )
-            else:
-                st.success("Última tanda lista.")
+            st.success(
+                f"Tanda {numero_tanda} lista · {total_actual} fotos"
+            )
         else:
-            st.caption(
-                f"Recibidas {total_actual} de {MAX_FOTOS} fotos…"
+            st.info(
+                f"Cargando tanda {numero_tanda}: "
+                f"{total_actual} de {MAX_FOTOS} fotos"
             )
 
-        st.divider()
+        # Los controles del servidor no repiten la lista del componente.
+        c1, c2 = st.columns(2)
 
-        # Lista más cómoda: 10 fotos visibles aproximadamente y scroll para el resto.
-        for i, item in enumerate(st.session_state.lote):
-            col_a, col_b, col_c = st.columns([0.6, 3.8, 0.8])
-
-            with col_a:
-                st.write(f"**{i + 1:02d}**")
-
-            with col_b:
-                st.write(item["name"])
-                st.caption(
-                    f"{item['size'] / (1024 * 1024):.1f} MB"
-                )
-
-            with col_c:
-                if st.button(
-                    "×",
-                    key=f"del_{numero_tanda}_{i}_{st.session_state.lote_version}",
-                    help="Quitar de la tanda",
-                ):
-                    Path(item["path"]).unlink(missing_ok=True)
-                    st.session_state.lote.pop(i)
-                    st.session_state.lote_version += 1
-                    st.session_state.zip_result = None
-                    st.session_state.lote_lista = False
-                    st.rerun()
-
-        st.divider()
-
-        # ----------------------------------------------------
-        # Procesar / siguiente / limpiar
-        # ----------------------------------------------------
-        if st.session_state.lote_lista:
-            if numero_tanda < total_tandas:
-                c1, c2, c3 = st.columns([1, 1, 1])
-            else:
-                c1, c2 = st.columns(2)
-
-            with c1:
-                if st.button(
-                    "Procesar tanda",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    with st.spinner("Procesando…"):
-                        zip_buffer = io.BytesIO()
-                        informe = [
-                            "INFORME DE MAQUETACIÓN",
-                            f"Proyecto: {st.session_state.nombre_proyecto}",
-                            f"Tanda: {numero_tanda} / {total_tandas}",
-                            f"Tamaño: {st.session_state.tipo_carta}",
-                            f"Resolución: {st.session_state.ppp} PPP",
-                            f"Salida: {px_ancho} × {px_alto} px",
-                            f"Offset: {st.session_state.offset_porcentaje:+.1f}%",
-                            f"Cartas procesadas: {len(st.session_state.lote)}",
-                            "",
-                        ]
-
-                        try:
-                            with zipfile.ZipFile(
-                                zip_buffer,
-                                "w",
-                                compression=zipfile.ZIP_DEFLATED,
-                            ) as zf:
-                                nombres_usados = set()
-
-                                for i, item in enumerate(
-                                    st.session_state.lote,
-                                    start=1,
-                                ):
-                                    img = cargar_imagen(item["path"])
-                                    final, _, _ = recortar_y_redimensionar(
-                                        img,
-                                        px_ancho,
-                                        px_alto,
-                                        st.session_state.offset_porcentaje,
-                                    )
-                                    final = preparar_rgb(final)
-
-                                    base = nombre_seguro(item["name"])
-                                    salida = f"{i:02d}_{base}.jpg"
-                                    contador = 2
-
-                                    while salida.lower() in nombres_usados:
-                                        salida = (
-                                            f"{i:02d}_{base}_{contador}.jpg"
-                                        )
-                                        contador += 1
-
-                                    nombres_usados.add(salida.lower())
-
-                                    out = io.BytesIO()
-                                    final.save(
-                                        out,
-                                        format="JPEG",
-                                        quality=95,
-                                        optimize=True,
-                                        dpi=(
-                                            st.session_state.ppp,
-                                            st.session_state.ppp,
-                                        ),
-                                    )
-                                    zf.writestr(
-                                        salida,
-                                        out.getvalue(),
-                                    )
-
-                                zf.writestr(
-                                    "INFORME.txt",
-                                    "\n".join(informe),
-                                )
-
-                            st.session_state.zip_result = (
-                                zip_buffer.getvalue()
-                            )
-                            st.success("Tanda procesada.")
-
-                        except (
-                            OSError,
-                            ValueError,
-                            UnidentifiedImageError,
-                        ) as exc:
-                            st.error(
-                                f"No se pudo procesar la tanda: {exc}"
-                            )
-
-            if numero_tanda < total_tandas:
-                with c2:
-                    if st.button(
-                        "Siguiente tanda →",
-                        use_container_width=True,
-                        disabled=st.session_state.zip_result is None,
-                    ):
-                        for item in st.session_state.lote:
-                            Path(item["path"]).unlink(missing_ok=True)
-
-                        st.session_state.lote = []
-                        st.session_state.lote_version += 1
-                        st.session_state.lote_ack_id = ""
-                        st.session_state.last_upload_id = ""
-                        st.session_state.lote_lista = False
-                        st.session_state.zip_result = None
-                        st.session_state.lote_advance_token += 1
-                        st.rerun()
-
-                with c3:
-                    if st.button(
-                        "Cancelar selección",
-                        use_container_width=True,
-                    ):
-                        for item in st.session_state.lote:
-                            Path(item["path"]).unlink(missing_ok=True)
-
-                        st.session_state.lote = []
-                        st.session_state.lote_version += 1
-                        st.session_state.lote_ack_id = ""
-                        st.session_state.last_upload_id = ""
-                        st.session_state.lote_lista = False
-                        st.session_state.lote_total_tandas = 0
-                        st.session_state.lote_numero = 1
-                        st.session_state.zip_result = None
-                        st.session_state.lote_reset_token += 1
-                        st.rerun()
-
-            else:
-                with c2:
-                    if st.button(
-                        "Nueva selección",
-                        use_container_width=True,
-                    ):
-                        for item in st.session_state.lote:
-                            Path(item["path"]).unlink(missing_ok=True)
-
-                        st.session_state.lote = []
-                        st.session_state.lote_version += 1
-                        st.session_state.lote_ack_id = ""
-                        st.session_state.last_upload_id = ""
-                        st.session_state.lote_lista = False
-                        st.session_state.lote_total_tandas = 0
-                        st.session_state.lote_numero = 1
-                        st.session_state.zip_result = None
-                        st.session_state.lote_reset_token += 1
-                        st.rerun()
-
-        else:
-            # Antes de completar la tanda, solo permitimos cancelar.
+        with c1:
             if st.button(
-                "Cancelar selección",
+                "Vaciar tanda",
                 use_container_width=True,
             ):
-                for item in st.session_state.lote:
-                    Path(item["path"]).unlink(missing_ok=True)
-
-                st.session_state.lote = []
-                st.session_state.lote_version += 1
-                st.session_state.lote_ack_id = ""
-                st.session_state.last_upload_id = ""
-                st.session_state.lote_lista = False
-                st.session_state.lote_total_tandas = 0
-                st.session_state.lote_numero = 1
-                st.session_state.zip_result = None
-                st.session_state.lote_reset_token += 1
+                limpiar_tanda_actual(avanzar=False)
                 st.rerun()
 
-    # --------------------------------------------------------
-    # Descarga
-    # --------------------------------------------------------
-    if st.session_state.zip_result:
-        st.download_button(
-            f"Descargar ZIP · tanda {st.session_state.lote_numero}",
-            data=st.session_state.zip_result,
-            file_name=(
-                f"{nombre_seguro(st.session_state.nombre_proyecto)}"
-                f"_tanda_{st.session_state.lote_numero:02d}.zip"
-            ),
-            mime="application/zip",
-            use_container_width=True,
-            type="primary",
+        with c2:
+            if st.session_state.lote_lista and st.session_state.zip_result is None:
+                accion = "Ajustar y descargar fotos"
+            else:
+                accion = "Esperando fotos…"
+
+            procesar = st.button(
+                accion,
+                type="primary",
+                use_container_width=True,
+                disabled=not st.session_state.lote_lista,
+            )
+
+            if procesar:
+                with st.spinner("Ajustando fotos…"):
+                    zip_buffer = io.BytesIO()
+                    informe = [
+                        "INFORME DE MAQUETACIÓN",
+                        f"Proyecto: {st.session_state.nombre_proyecto}",
+                        f"Tanda: {numero_tanda} / {total_tandas}",
+                        f"Tamaño: {st.session_state.tipo_carta}",
+                        f"Resolución: {st.session_state.ppp} PPP",
+                        f"Salida: {px_ancho} × {px_alto} px",
+                        f"Desplazamiento: {st.session_state.offset_porcentaje:+.1f}%",
+                        "",
+                    ]
+
+                    try:
+                        with zipfile.ZipFile(
+                            zip_buffer,
+                            "w",
+                            compression=zipfile.ZIP_DEFLATED,
+                        ) as zf:
+                            nombres_usados = set()
+
+                            for i, item in enumerate(
+                                st.session_state.lote,
+                                start=1,
+                            ):
+                                img = cargar_imagen(item["path"])
+                                final, _, _ = recortar_y_redimensionar(
+                                    img,
+                                    px_ancho,
+                                    px_alto,
+                                    st.session_state.offset_porcentaje,
+                                )
+                                final = preparar_rgb(final)
+
+                                base = nombre_seguro(item["name"])
+                                salida = f"{i:02d}_{base}.jpg"
+                                contador = 2
+
+                                while salida.lower() in nombres_usados:
+                                    salida = f"{i:02d}_{base}_{contador}.jpg"
+                                    contador += 1
+
+                                nombres_usados.add(salida.lower())
+
+                                out = io.BytesIO()
+                                final.save(
+                                    out,
+                                    format="JPEG",
+                                    quality=95,
+                                    optimize=True,
+                                    dpi=(st.session_state.ppp, st.session_state.ppp),
+                                )
+                                zf.writestr(salida, out.getvalue())
+
+                            zf.writestr(
+                                "INFORME.txt",
+                                "\n".join(informe),
+                            )
+
+                        st.session_state.zip_result = zip_buffer.getvalue()
+                        st.success("Fotos ajustadas.")
+                        st.rerun()
+
+                    except (
+                        OSError,
+                        ValueError,
+                        UnidentifiedImageError,
+                    ) as exc:
+                        st.error(f"No se pudo procesar la tanda: {exc}")
+
+        # Descarga siempre debajo del botón de ajuste, cuando esté lista.
+        if st.session_state.zip_result:
+            st.download_button(
+                "Descargar ZIP con fotos ajustadas",
+                data=st.session_state.zip_result,
+                file_name=(
+                    f"{nombre_seguro(st.session_state.nombre_proyecto)}"
+                    f"_tanda_{numero_tanda:02d}.zip"
+                ),
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+            )
+
+            if numero_tanda < total_tandas:
+                st.caption(
+                    f"Quedan {total_tandas - numero_tanda} tandas. "
+                    "Puedes continuar con la siguiente cuando hayas descargado este ZIP."
+                )
+                if st.button(
+                    "Siguiente tanda →",
+                    use_container_width=True,
+                ):
+                    limpiar_tanda_actual(avanzar=True)
+                    st.rerun()
+            else:
+                st.success("Has terminado todas las tandas seleccionadas.")
+
+
+# ============================================================
+# 3 · AJUSTAR RECORTE
+# ============================================================
+with st.expander("3 · Ajustar recorte", expanded=False):
+    st.write(
+        "Si la carta que subes no tiene el tamaño o proporción exacta lo ajustamos, "
+        "pero si quieres puedes definir un recorte preciso que se aplicará a todas las cartas."
+    )
+
+    ref_file = st.file_uploader(
+        f"Subir una foto de referencia · máximo {MAX_MB_POR_FOTO} MB",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=False,
+        key=f"ref_uploader_{st.session_state.ref_uploader_version}",
+        max_upload_size=MAX_MB_POR_FOTO,
+    )
+
+    if ref_file is not None and ref_file.name != st.session_state.ref_name:
+        ref_path = (
+            Path(st.session_state.tmp_dir)
+            / f"referencia{Path(ref_file.name).suffix.lower()}"
         )
+        guardar_upload(ref_file, ref_path)
+        st.session_state.ref_path = str(ref_path)
+        st.session_state.ref_name = ref_file.name
+
+    if st.session_state.ref_path:
+        try:
+            img_ref = cargar_imagen(st.session_state.ref_path)
+            _, _, eje = recortar_y_redimensionar(
+                img_ref,
+                px_ancho,
+                px_alto,
+                0.0,
+            )
+
+            if eje == "X":
+                st.caption(
+                    "Recorte horizontal · negativo = izquierda · positivo = derecha"
+                )
+            elif eje == "Y":
+                st.caption(
+                    "Recorte vertical · negativo = abajo · positivo = arriba"
+                )
+            else:
+                st.caption("La proporción coincide: no hace falta recortar.")
+
+            st.session_state.offset_porcentaje = st.slider(
+                "Desplazamiento del encuadre",
+                -50.0,
+                50.0,
+                float(st.session_state.offset_porcentaje),
+                0.5,
+                disabled=eje is None,
+                key="offset_slider",
+            )
+
+            previa, box, _ = recortar_y_redimensionar(
+                img_ref,
+                px_ancho,
+                px_alto,
+                st.session_state.offset_porcentaje,
+            )
+            original_marcada = preview_con_box(img_ref, box)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.image(
+                    original_marcada,
+                    caption="Encuadre",
+                    use_container_width=True,
+                )
+            with col2:
+                st.image(
+                    previa,
+                    caption="Resultado",
+                    use_container_width=True,
+                )
+
+            if st.button("Quitar referencia", use_container_width=True):
+                Path(st.session_state.ref_path).unlink(missing_ok=True)
+                st.session_state.ref_path = None
+                st.session_state.ref_name = ""
+                st.session_state.offset_porcentaje = 0.0
+                st.session_state.ref_uploader_version += 1
+                st.rerun()
+
+        except (
+            OSError,
+            ValueError,
+            UnidentifiedImageError,
+        ) as exc:
+            st.error(f"No se pudo abrir la referencia: {exc}")
+    else:
+        st.info("Puedes subir una foto para definir un recorte concreto.")
+
 
 st.caption(
     f"{st.session_state.tipo_carta} · {st.session_state.ppp} PPP · "
-    f"offset {st.session_state.offset_porcentaje:+.1f}%"
+    f"recorte {st.session_state.offset_porcentaje:+.1f}%"
 )

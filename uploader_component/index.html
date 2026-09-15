@@ -16,8 +16,8 @@ strong { display:block; margin-bottom:5px; font-size:14px; }
 small { color:#666; }
 .msg { margin-top:8px; font-size:12px; min-height:18px; }
 .ok { color:#237a42; } .err { color:#9d2929; } .muted { color:#666; }
-.files { margin-top:9px; max-height:380px; overflow:auto; border:1px solid #e5e5e5; border-radius:8px; background:#fff; }
-.file { display:flex; justify-content:space-between; gap:10px; align-items:center; min-height:34px; padding:7px 9px; border-bottom:1px solid #eeeeee; font-size:12px; }
+.files { margin-top:9px; max-height:460px; overflow:auto; border:1px solid #e5e5e5; border-radius:8px; background:#fff; }
+.file { display:flex; justify-content:space-between; gap:10px; align-items:center; min-height:42px; padding:9px 10px; border-bottom:1px solid #eeeeee; font-size:13px; }
 .file:last-child { border-bottom:0; }
 .name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .size { color:#666; white-space:nowrap; }
@@ -33,7 +33,7 @@ button:disabled { opacity:.4; cursor:default; }
 <div class="wrap">
   <div id="drop" class="drop">
     <strong>Selecciona o arrastra tus cartas</strong>
-    <small id="help">Puedes seleccionar muchas · JPG, PNG · 12 MB/archivo</small>
+    <small id="help">Selecciona todas las que quieras · JPG, PNG · 12 MB/archivo</small>
     <input id="picker" type="file" multiple hidden accept=".jpg,.jpeg,.png,image/jpeg,image/png">
   </div>
   <div id="msg" class="msg muted"></div>
@@ -114,8 +114,8 @@ function render() {
   if (!allFiles.length) {
     filesEl.innerHTML = '<div class="empty">Todavía no hay imágenes seleccionadas.</div>';
   } else {
-    // During an active batch show that batch. Before sending, show all selected.
-    const list = batchDone || sending ? current : allFiles;
+    // La lista visible corresponde siempre a la tanda activa.
+    const list = current;
     list.forEach((file, i) => {
       const row = document.createElement("div");
       row.className = "file";
