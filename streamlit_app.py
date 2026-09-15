@@ -20,7 +20,19 @@ from uploader_component import batch_uploader
 st.set_page_config(
     page_title="Maquetador de Cartas",
     page_icon="🃏",
-    layout="centered",
+    layout="wide",
+)
+
+st.markdown(
+    """<style>
+    .block-container {
+        max-width: 1180px;
+        padding-top: 2rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+    }
+    </style>""",
+    unsafe_allow_html=True,
 )
 
 MEDIDAS_CARTAS = {
@@ -382,7 +394,7 @@ with header_help:
         except OSError:
             st.error("No se ha podido cargar la guía de ayuda.")
 
-col1, col2, col3 = st.columns([3.2, 2.0, 2.0])
+col1, col2, col3 = st.columns([3.6, 2.2, 3.2], gap="large")
 with col1:
     opciones_tipo = list(MEDIDAS_CARTAS.keys())
     indice_tipo = opciones_tipo.index(st.session_state.tipo_carta)
@@ -409,19 +421,19 @@ with col3:
         value=st.session_state.sangrado_activo,
         help="Marca esto si tus cartas incluyen sangrado. El programa lo conservará si lo marcas.",
     )
-
-if st.session_state.sangrado_activo:
-    st.session_state.sangrado_mm = st.number_input(
-        "Sangrado por lado (mm)",
-        min_value=0.1,
-        max_value=20.0,
-        value=float(st.session_state.sangrado_mm),
-        step=0.5,
-        format="%.1f",
-        help="El valor se aplica por cada lado de la carta. 3 mm es habitual en muchos flujos de impresión, pero utiliza el valor solicitado por tu imprenta.",
-    )
-else:
-    st.session_state.sangrado_mm = 3.0
+    if st.session_state.sangrado_activo:
+        st.session_state.sangrado_mm = st.slider(
+            "Sangrado por lado (mm)",
+            min_value=0.5,
+            max_value=20.0,
+            value=float(st.session_state.sangrado_mm),
+            step=0.5,
+            format="%.1f mm",
+            help="Se aplica por cada lado de la carta. 3 mm es un valor habitual, pero utiliza el valor solicitado por tu imprenta.",
+        )
+    else:
+        st.caption("Sin sangrado · se usa el tamaño de corte")
+        st.session_state.sangrado_mm = 3.0
 
 px_ancho, px_alto = dimensiones_px(
     st.session_state.tipo_carta,
