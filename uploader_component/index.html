@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://unpkg.com/streamlit-component-lib/dist/index.js"></script>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#202124; background:transparent; }
+.wrap { width:100%; }
+.drop { border:1px dashed #aaa; border-radius:9px; padding:17px 15px; text-align:center; background:#fafafa; cursor:pointer; transition:.15s; }
+.drop:hover,.drop.drag { border-color:#666; background:#f3f3f3; }
+.drop.disabled { opacity:.55; cursor:default; }
+strong { display:block; margin-bottom:5px; font-size:14px; }
+small { color:#666; }
+.msg { margin-top:8px; font-size:12px; min-height:17px; }
+.ok { color:#237a42; } .err { color:#9d2929; } .muted { color:#666; }
+.files { margin-top:8px; max-height:190px; overflow:auto; }
+.file { display:flex; justify-content:space-between; gap:10px; align-items:center; padding:6px 2px; border-bottom:1px solid #e8e8e8; font-size:12px; }
+.name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.size { color:#666; white-space:nowrap; }
+.footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:9px; }
+.count { font-size:12px; color:#666; }
+button { border:0; border-radius:7px; padding:8px 12px; cursor:pointer; font-weight:600; background:#222; color:#fff; }
+button:disabled { opacity:.4; cursor:default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="drop" class="drop">
+    <strong>Selecciona o arrastra tus cartas</strong>
+    <small id="help">Hasta 18 archivos</small>
+    <input id="picker" type="file" multiple hidden>
+  </div>
+  <div id="msg" class="msg muted"></div>
+  <div id="files" class="files"></div>
+  <div class="footer">
+    <div id="count" class="count">0 seleccionadas</div>
+    <button id="send" disabled>Añadir a la tanda</button>
+  </div>
+</div>
+<script>
+const drop = document.getElementById("drop");
+const picker = document.getElementById("picker");
+const msg = document.getElementById("msg");
+const filesEl = document.getElementById("files");
+const send = document.getElementById("send");
+const countEl = document.getElementById("count");
+
+let config = {max_files:18,max_file_mb:12,max_total_mb:null,accepted_types:["jpg","jpeg","png"]};
+let selected = [];
+let queue = [];
+let sending = false;
+let currentId = null;
+let lastAck = "";
+let resetToken = null;
+
+function fmtMb(bytes) { return (bytes/1024/1024).toFixed(1) + " MB"; }
+function setMsg(text, cls="muted") { msg.className="msg "+cls; msg.textContent=text; }
+function esc(s) { return s.replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'})[c]); }
+function render() {
+  filesEl.innerHTML="";
+  for (const f of selected) {
+    const row=document.createElement("div"); row.className="file";
+    row.innerHTML=`<span class="name">${esc(f.name)}</span><span class="size">${fmtMb(f.size)}</span>`;
+    filesEl.appendChild(row);
+  }
+  countEl.textContent=`${selected.length} seleccionada${selected.length===1?'':'s'}`;
+  send.disabled=selected.length===0 || sending;
+  drop.classList.toggle("disabled", sending);
+}
+
+function acceptFiles(fileList) {
+  if (sending) return;
+  const incoming=Array.from(fileList||[]);
+  if (!incoming.length) return;
+
+  const room=Math.max(0, Number(config.max_files||18)-selected.length);
+  let added=0, rejected=[];
+  const maxBytes=Number(config.max_file_mb||12)*1024*1024;
+  let total=selected.reduce((n,f)=>n+f.size,0);
+
+  for (const file of incoming) {
+    if (selected.length+added>=Number(config.max_files||18)) { rejected.push(`${file.name}: límite de archivos`); continue; }
+    const ext=(file.name.split('.').pop()||'').toLowerCase();
+    if (!config.accepted_types.includes(ext)) { rejected.push(`${file.name}: formato no válido`); continue; }
+    if (file.size>maxBytes) { rejected.push(`${file.name}: supera ${config.max_file_mb} MB`); continue; }
+    selected.push(file); total+=file.size; added++;
+  }
+
+  render();
+  if (rejected.length) setMsg(`${added} añadidas · ${rejected.length} rechazadas`, "err");
+  else setMsg(`${added} añadida${added===1?'':'s'}`, "ok");
+  picker.value="";
+}
+
+function bytesToBase64(bytes) {
+  let binary="";
+  const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode.apply(null, bytes.subarray(i,Math.min(i+chunk,bytes.length)));
+  return btoa(binary);
+}
+
+async function sendNext() {
+  if (!queue.length) {
+    sending=false; currentId=null; render();
+    setMsg("Tanda añadida a la aplicación.","ok");
+    return;
+  }
+  sending=true; render();
+  const file=queue[0];
+  currentId=`${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  setMsg(`Subiendo ${queue.length} restante${queue.length===1?'':'s'}…`,"muted");
+  const buffer=new Uint8Array(await file.arrayBuffer());
+  const payload={upload_id:currentId,name:file.name,size:file.size,mime:file.type,base64:bytesToBase64(buffer)};
+  Streamlit.setComponentValue(payload);
+}
+
+function startSending() {
+  if (!selected.length || sending) return;
+  queue=selected.slice();
+  selected=[];
+  render();
+  sendNext();
+}
+
+Streamlit.events.addEventListener(Streamlit.RENDER_EVENT,event=>{
+  config=event.detail.args||config;
+  document.getElementById("help").textContent=`Hasta ${config.max_files||18} archivos · ${config.max_file_mb||12} MB/archivo`;
+
+  const token=config.reset_token;
+  if(resetToken===null) resetToken=token;
+  else if(token!==resetToken){ resetToken=token; selected=[]; queue=[]; sending=false; currentId=null; render(); setMsg("", "muted"); }
+
+  const ack=config.ack_id||"";
+  if(ack && ack!==lastAck){
+    lastAck=ack;
+    if(currentId===ack){
+      queue.shift();
+      currentId=null;
+      sendNext();
+    }
+  }
+  Streamlit.setFrameHeight(265);
+  Streamlit.setComponentReady();
+  render();
+});
+
+drop.addEventListener("click",()=>{ if(!sending) picker.click(); });
+picker.addEventListener("change",e=>acceptFiles(e.target.files));
+drop.addEventListener("dragover",e=>{e.preventDefault(); if(!sending) drop.classList.add("drag");});
+drop.addEventListener("dragleave",()=>drop.classList.remove("drag"));
+drop.addEventListener("drop",e=>{e.preventDefault(); drop.classList.remove("drag"); if(!sending) acceptFiles(e.dataTransfer.files);});
+send.addEventListener("click",startSending);
+
+Streamlit.setComponentReady();
+Streamlit.setFrameHeight(265);
+</script>
+</body>
+</html>
