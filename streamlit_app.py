@@ -51,90 +51,93 @@ archivos_subidos = st.file_uploader(
 
 # --- PROCESAMIENTO POR LOTE ---
 if archivos_subidos:
-    # Creamos un contenedor de bytes para armar el ZIP en memoria sin guardar nada en el servidor
-    zip_buffer = io.BytesIO()
-    
-    # Texto que acumulará los datos para el informe de texto
-    lineas_informe = []
-    lineas_informe.append("==================================================")
-    lineas_informe.append("      INFORME DE PROCESAMIENTO DE IMÁGENES        ")
-    lineas_informe.append("==================================================")
-    lineas_informe.append(f"Tamaño elegido: {carta_seleccionada}")
-    lineas_informe.append(f"Resolución de salida: {ppp_final} PPP")
-    lineas_informe.append(f"Dimensiones objetivo en píxeles: {px_ancho} x {px_alto} px")
-    lineas_informe.append(f"Total de imágenes procesadas: {len(archivos_subidos)}")
-    lineas_informe.append("--------------------------------------------------\n")
+    # NUEVA VALIDACIÓN: Limitar a un máximo de 15 imágenes
+    if len(archivos_subidos) > 15:
+        st.error(f"⚠️ No se permite subir más de 15 fotos de golpe (Has subido {len(archivos_subidos)}). Estamos en pruebas, por favor sube pequeños grupos.")
+    else:
+        # Creamos un contenedor de bytes para armar el ZIP en memoria sin guardar nada en el servidor
+        zip_buffer = io.BytesIO()
+        
+        # Texto que acumulará los datos para el informe de texto
+        lineas_informe = []
+        lineas_informe.append("==================================================")
+        lineas_informe.append("      INFORME DE PROCESAMIENTO DE IMÁGENES        ")
+        lineas_informe.append("==================================================")
+        lineas_informe.append(f"Tamaño elegido: {carta_seleccionada}")
+        lineas_informe.append(f"Resolución de salida: {ppp_final} PPP")
+        lineas_informe.append(f"Dimensiones objetivo en píxeles: {px_ancho} x {px_alto} px")
+        lineas_informe.append(f"Total de imágenes procesadas: {len(archivos_subidos)}")
+        lineas_informe.append("--------------------------------------------------\n")
 
-    # Barra de progreso visual para el usuario
-    barra_progreso = st.progress(0)
-    status_text = st.empty()
-    
-    # Abrimos el archivo ZIP para empezar a meter las imágenes dentro
-    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as archivo_zip:
+        # Barra de progreso visual para el usuario
+        barra_progreso = st.progress(0)
+        status_text = st.empty()
         
-        for idx, archivo in enumerate(archivos_subidos):
-            status_text.text(f"Procesando {idx + 1}/{len(archivos_subidos)}: {archivo.name}")
+        # Abrimos el archivo ZIP para empezar a meter las imágenes dentro
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED) as archivo_zip:
             
-            img_original = Image.open(archivo)
-            img_original = ImageOps.exif_transpose(img_original) # Corregir rotaciones de móviles
-            
-            orig_w, orig_h = img_original.size
-            
-            # Determinar si se agrandó o se achicó para el informe
-            # Analizamos si el área es mayor o menor
-            if (orig_w * orig_h) < (px_ancho * px_alto):
-                accion = "AGRANDADA (Upscale / Interpolación Lanzcos)"
-            elif (orig_w * orig_h) > (px_ancho * px_alto):
-                accion = "ACHICADA (Downscale / Compresión de píxeles)"
-            else:
-                accion = "MANTUVO TAMAÑO (Solo ajuste de proporciones)"
+            for idx, archivo in enumerate(archivos_subidos):
+                status_text.text(f"Procesando {idx + 1}/{len(archivos_subidos)}: {archivo.name}")
                 
-            # Verificar si la proporción original difiere de la de destino (recorte)
-            prop_original = orig_w / orig_h
-            prop_destino = px_ancho / px_alto
-            recorte = "SÍ (Bordes recortados para encajar proporción)" if abs(prop_original - prop_destino) > 0.01 else "NO (Encaje perfecto)"
+                img_original = Image.open(archivo)
+                img_original = ImageOps.exif_transpose(img_original) # Corregir rotaciones de móviles
+                
+                orig_w, orig_h = img_original.size
+                
+                # Determinar si se agrandó o se achicó para el informe
+                if (orig_w * orig_h) < (px_ancho * px_alto):
+                    accion = "AGRANDADA (Upscale / Interpolación Lanzcos)"
+                elif (orig_w * orig_h) > (px_ancho * px_alto):
+                    accion = "ACHICADA (Downscale / Compresión de píxeles)"
+                else:
+                    accion = "MANTUVO TAMAÑO (Solo ajuste de proporciones)"
+                    
+                # Verificar si la proporción original difiere de la de destino (recorte)
+                prop_original = orig_w / orig_h
+                prop_destino = px_ancho / px_alto
+                recorte = "SÍ (Bordes recortados para encajar proporción)" if abs(prop_original - prop_destino) > 0.01 else "NO (Encaje perfecto)"
+                
+                # Registrar datos en el informe para este archivo
+                lineas_informe.append(f"Archivo: {archivo.name}")
+                lineas_informe.append(f"  - Tamaño original: {orig_w} x {orig_h} px")
+                lineas_informe.append(f"  - Acción tomada: {accion}")
+                lineas_informe.append(f"  - Hubo recorte por proporción: {recorte}")
+                lineas_informe.append(f"  - Resultado: {px_ancho} x {px_alto} px a {ppp_final} DPI\n")
+                
+                # REDIMENSIONADO INTELIGENTE Y CENTRADO
+                img_procesada = ImageOps.fit(
+                    img_original, 
+                    (px_ancho, px_alto), 
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5)
+                )
+                
+                # Guardamos la imagen procesada en un buffer de memoria temporal
+                img_buffer = io.BytesIO()
+                formato = img_original.format if img_original.format else "JPEG"
+                img_procesada.save(img_buffer, format=formato, dpi=(ppp_final, ppp_final), quality=95)
+                img_buffer.seek(0)
+                
+                # Añadir la imagen al ZIP
+                nombre_final_imagen = f"LISTA_{archivo.name}"
+                archivo_zip.writestr(nombre_final_imagen, img_buffer.read())
+                
+                # Actualizar barra de progreso web
+                barra_progreso.progress((idx + 1) / len(archivos_subidos))
+                
+            # Al terminar todas las imágenes, generamos el archivo informe.txt en texto plano
+            texto_informe = "\n".join(lineas_informe)
+            archivo_zip.writestr("informe.txt", texto_informe)
             
-            # Registrar datos en el informe para este archivo
-            lineas_informe.append(f"Archivo: {archivo.name}")
-            lineas_informe.append(f"  - Tamaño original: {orig_w} x {orig_h} px")
-            lineas_informe.append(f"  - Acción tomada: {accion}")
-            lineas_informe.append(f"  - Hubo recorte por proporción: {recorte}")
-            lineas_informe.append(f"  - Resultado: {px_ancho} x {px_alto} px a {ppp_final} DPI\n")
-            
-            # REDIMENSIONADO INTELIGENTE Y CENTRADO
-            img_procesada = ImageOps.fit(
-                img_original, 
-                (px_ancho, px_alto), 
-                method=Image.Resampling.LANCZOS,
-                centering=(0.5, 0.5)
-            )
-            
-            # Guardamos la imagen procesada en un buffer de memoria temporal
-            img_buffer = io.BytesIO()
-            formato = img_original.format if img_original.format else "JPEG"
-            img_procesada.save(img_buffer, format=formato, dpi=(ppp_final, ppp_final), quality=95)
-            img_buffer.seek(0)
-            
-            # Añadir la imagen al ZIP
-            nombre_final_imagen = f"LISTA_{archivo.name}"
-            archivo_zip.writestr(nombre_final_imagen, img_buffer.read())
-            
-            # Actualizar barra de progreso web
-            barra_progreso.progress((idx + 1) / len(archivos_subidos))
-            
-        # Al terminar todas las imágenes, generamos el archivo informe.txt en texto plano
-        texto_informe = "\n".join(lineas_informe)
-        archivo_zip.writestr("informe.txt", texto_informe)
+        status_text.text("✨ ¡Todo procesado con éxito! El paquete ZIP está listo.")
         
-    status_text.text("✨ ¡Todo procesado con éxito! El paquete ZIP está listo.")
-    
-    # Preparar el botón de descarga del ZIP completo
-    zip_buffer.seek(0)
-    st.write("---")
-    st.download_button(
-        label="📥 Descargar todas las cartas en un archivo ZIP",
-        data=zip_buffer,
-        file_name=f"cartas_listas_{ppp_final}ppp.zip",
-        mime="application/zip",
-        use_container_width=True
-    )
+        # Preparar el botón de descarga del ZIP completo
+        zip_buffer.seek(0)
+        st.write("---")
+        st.download_button(
+            label="📥 Descargar todas las cartas en un archivo ZIP",
+            data=zip_buffer,
+            file_name=f"cartas_listas_{ppp_final}ppp.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
