@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFilter, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageOps, UnidentifiedImageError
 
 from uploader_component import batch_uploader
 
@@ -257,18 +257,42 @@ def preview_con_box(img, box):
 
 def cargar_imagen(path):
     with Image.open(path) as img:
-        return ImageOps.exif_transpose(img).copy()
+        # Guardamos explícitamente el perfil ICC porque algunas operaciones de
+        # Pillow pueden no conservarlo en el objeto resultante. No convertimos
+        # los colores: simplemente transportamos el mismo perfil hasta la salida.
+        icc_profile = img.info.get("icc_profile")
+        corregida = ImageOps.exif_transpose(img).copy()
+        if icc_profile:
+            corregida.info["icc_profile"] = icc_profile
+        return corregida
+
+
+def nombre_perfil_icc(icc_profile):
+    if not icc_profile:
+        return "Sin perfil ICC incrustado"
+    try:
+        with ImageCms.ImageCmsProfile(io.BytesIO(icc_profile)) as profile:
+            nombre = ImageCms.getProfileName(profile).strip()
+            if nombre:
+                return nombre
+    except Exception:
+        pass
+    return "Perfil ICC incrustado (no identificado)"
 
 
 def preparar_rgb(img):
     if img.mode == "RGB":
         return img
+    icc_profile = img.info.get("icc_profile")
     if "A" in img.getbands():
         fondo = Image.new("RGB", img.size, "white")
         rgba = img.convert("RGBA")
         fondo.paste(rgba, mask=img.getchannel("A"))
-        return fondo
-    return img.convert("RGB")
+    else:
+        fondo = img.convert("RGB")
+    if icc_profile:
+        fondo.info["icc_profile"] = icc_profile
+    return fondo
 
 
 def guardar_upload(uploaded_file, destino: Path):
@@ -278,7 +302,7 @@ def guardar_upload(uploaded_file, destino: Path):
 
 def proyecto_json():
     return {
-        "version": 3.1,
+        "version": 3.3,
         "nombre_proyecto": st.session_state.nombre_proyecto,
         "fecha_creacion": st.session_state.fecha_creacion,
         "tipo_carta": st.session_state.tipo_carta,
@@ -582,6 +606,8 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                         f"Salida: {px_ancho} × {px_alto} px",
                         f"Desplazamiento: {st.session_state.offset_porcentaje:+.1f}%",
                         "Ampliación: Lanczos + enfoque suave solo cuando el canvas recortado queda por debajo de la salida.",
+                        "Color: se conserva el mismo perfil ICC incrustado en la imagen de entrada, si existe. No se realiza conversión de color.",
+                        "Nota de impresión: algunas imprentas o programas prefieren Adobe RGB o un perfil ICC propio. Comprueba sus requisitos antes de imprimir.",
                         "",
                     ]
 
@@ -610,6 +636,9 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                                 nombres_usados.add(nombre_original.lower())
 
                                 img = cargar_imagen(item["path"])
+                                icc_profile = img.info.get("icc_profile")
+                                perfil_icc = nombre_perfil_icc(icc_profile)
+
                                 final, box, _, operacion, escala = recortar_y_redimensionar(
                                     img,
                                     px_ancho,
@@ -627,6 +656,7 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                                         quality=95,
                                         optimize=True,
                                         dpi=(st.session_state.ppp, st.session_state.ppp),
+                                        icc_profile=icc_profile,
                                     )
                                 else:
                                     # Mantener PNG como PNG y conservar exactamente
@@ -636,10 +666,11 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                                         format="PNG",
                                         optimize=True,
                                         dpi=(st.session_state.ppp, st.session_state.ppp),
+                                        icc_profile=icc_profile,
                                     )
 
                                 informe.append(
-                                    f"{nombre_original} · canvas {int(round(box[2]-box[0]))}×{int(round(box[3]-box[1]))} px · {operacion}"
+                                    f"{nombre_original} · canvas {int(round(box[2]-box[0]))}×{int(round(box[3]-box[1]))} px · {operacion} · perfil: {perfil_icc}"
                                 )
 
                                 # El nombre dentro del ZIP es EXACTAMENTE el original.
