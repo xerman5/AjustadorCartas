@@ -482,4 +482,3 @@ st.caption(
     f"{st.session_state.tipo_carta} · {st.session_state.ppp} PPP · "
     f"offset {st.session_state.offset_porcentaje:+.1f}%"
 )
-
