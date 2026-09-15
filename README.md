@@ -1,8 +1,8 @@
-# Maquetador de Cartas 3.3
+# Maquetador de Cartas 3.4
 
 Aplicación Streamlit para preparar imágenes de cartas a un tamaño físico y resolución de salida concretos, ajustar el recorte y procesarlas por tandas.
 
-## 3.3
+## 3.4
 
 - Conserva el perfil ICC incrustado en cada imagen de entrada al generar la salida.
 - No convierte el espacio de color: una imagen sRGB permanece sRGB y una Adobe RGB permanece Adobe RGB, siempre que el archivo de entrada lleve ese perfil incrustado.

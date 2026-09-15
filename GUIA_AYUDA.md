@@ -346,31 +346,53 @@ Si el programa vuelve a escalar la imagen, el tamaño físico final puede cambia
 
 ---
 
-# 13. El sangrado es otra cuestión
+# 13. Sangrado: la imagen debe traerlo ya incorporado
 
-El tamaño de la carta terminada y el tamaño del archivo con sangrado pueden ser diferentes.
+El sangrado es una extensión de la imagen que queda fuera del tamaño final de corte. Muchas imprentas trabajan con **3 mm de sangrado por cada lado**, aunque debes seguir siempre las especificaciones de tu imprenta.
 
-Por ejemplo:
+Nuestro programa **no crea ni añade el sangrado**. Solo permite trabajar con imágenes que ya lo contienen. Al activar esta opción, el programa interpreta que la imagen de entrada incluye ese margen adicional y calcula el canvas completo en consecuencia.
+
+Por ejemplo, una carta de:
+
+`63,5 × 88,9 mm`
+
+con 3 mm de sangrado por cada lado debe llegar al programa como una imagen de:
+
+`69,5 × 94,9 mm`
+
+El tamaño físico de corte sigue siendo:
+
+`63,5 × 88,9 mm`
+
+y los 3 mm adicionales de cada lado quedan fuera del área de corte.
+
+## ¿Por qué es importante configurarlo bien?
+
+Es un error tratar una imagen que ya mide `69,5 × 94,9 mm` como si fuera una carta Standard de `63,5 × 88,9 mm` **sin sangrado**. En ese caso estaríamos diciendo al programa que todo el archivo corresponde al tamaño de corte, cuando en realidad contiene 3 mm adicionales alrededor.
+
+En el programa, la opción se muestra como:
+
+**La imagen incluye sangrado**
+
+Está desactivada por defecto. Si se activa, el valor inicial es **3 mm por lado**, y puede cambiarse por otro valor si la imprenta lo requiere.
+
+El cálculo pasa a ser:
 
 ```text
-Tamaño de corte:
-63,5 × 88,9 mm
+Tamaño de corte
+      +
+Sangrado izquierdo + derecho
+      +
+Sangrado superior + inferior
+      ↓
+Canvas completo de la imagen
 ```
 
-Con 3 mm de sangrado por cada lado:
+La preview muestra la línea de corte para que puedas distinguir visualmente el tamaño de la carta del área de sangrado.
 
-```text
-Tamaño con sangrado:
-69,5 × 94,9 mm
-```
+El sangrado también se tiene en cuenta al calcular la resolución y al decidir si el canvas necesita reducción, ampliación o ningún redimensionado.
 
-El sangrado sirve para que, después de cortar, no aparezca una línea blanca en el borde.
-
-El Maquetador de Cartas trabaja con las dimensiones de carta configuradas. **No añade automáticamente sangrado de imprenta.**
-
-Si tu flujo de impresión necesita sangrado, sigue las especificaciones de la imprenta o del programa de maquetación.
-
----
+Si utilizas después una herramienta de maquetación como PNP Tools, revisa cómo interpreta exactamente su configuración de sangrado y sigue sus indicaciones.
 
 # 14. Espacio de color e ICC
 

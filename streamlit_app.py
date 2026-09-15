@@ -49,6 +49,8 @@ def init_state():
         "nombre_proyecto": "Nuevo Proyecto",
         "tipo_carta": list(MEDIDAS_CARTAS.keys())[0],
         "ppp": 300,
+        "sangrado_activo": False,
+        "sangrado_mm": 3.0,
         "nombre_input": "Nuevo Proyecto",
         "offset_porcentaje": 0.0,
         "fecha_creacion": datetime.now().strftime("%Y-%m-%d_%H-%M"),
@@ -94,6 +96,8 @@ def reset_project():
     st.session_state.nombre_proyecto = "Nuevo Proyecto"
     st.session_state.tipo_carta = list(MEDIDAS_CARTAS.keys())[0]
     st.session_state.ppp = 300
+    st.session_state.sangrado_activo = False
+    st.session_state.sangrado_mm = 3.0
     st.session_state.nombre_input = "Nuevo Proyecto"
     st.session_state.offset_porcentaje = 0.0
     st.session_state.fecha_creacion = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -144,11 +148,27 @@ def nombre_seguro(nombre: str) -> str:
     return stem or "carta"
 
 
-def dimensiones_px(tipo_carta: str, ppp: int):
+def dimensiones_mm(tipo_carta: str, sangrado_activo: bool, sangrado_mm: float):
     cm_ancho, cm_alto = MEDIDAS_CARTAS[tipo_carta]
+    corte_ancho = cm_ancho * 10.0
+    corte_alto = cm_alto * 10.0
+    bleed = max(0.0, float(sangrado_mm)) if sangrado_activo else 0.0
     return (
-        int(round(cm_ancho / 2.54 * ppp)),
-        int(round(cm_alto / 2.54 * ppp)),
+        corte_ancho,
+        corte_alto,
+        corte_ancho + 2.0 * bleed,
+        corte_alto + 2.0 * bleed,
+        bleed,
+    )
+
+
+def dimensiones_px(tipo_carta: str, ppp: int, sangrado_activo: bool, sangrado_mm: float):
+    _, _, total_ancho_mm, total_alto_mm, _ = dimensiones_mm(
+        tipo_carta, sangrado_activo, sangrado_mm
+    )
+    return (
+        int(round(total_ancho_mm / 25.4 * ppp)),
+        int(round(total_alto_mm / 25.4 * ppp)),
     )
 
 
@@ -255,6 +275,38 @@ def preview_con_box(img, box):
     return vista
 
 
+def preview_resultado(img, bleed_mm, ppp, bleed_active):
+    """Preview del canvas final, mostrando la línea de corte si hay sangrado."""
+    vista = img.convert("RGB")
+    max_w = 1000
+    if vista.width > max_w:
+        ratio = max_w / vista.width
+        vista = vista.resize(
+            (max_w, max(1, int(vista.height * ratio))),
+            Image.Resampling.LANCZOS,
+        )
+
+    if bleed_active and bleed_mm > 0:
+        escala = vista.width / img.width
+        bleed_px = bleed_mm / 25.4 * ppp
+        inset_x = int(round(bleed_px * escala))
+        inset_y = int(round(bleed_px * escala))
+        rect = (
+            inset_x,
+            inset_y,
+            vista.width - inset_x,
+            vista.height - inset_y,
+        )
+        draw = ImageDraw.Draw(vista)
+        draw.rectangle(
+            rect,
+            outline=(255, 180, 0),
+            width=max(2, int(round(vista.width / 500))),
+        )
+
+    return vista
+
+
 def cargar_imagen(path):
     with Image.open(path) as img:
         # Guardamos explícitamente el perfil ICC porque algunas operaciones de
@@ -302,11 +354,13 @@ def guardar_upload(uploaded_file, destino: Path):
 
 def proyecto_json():
     return {
-        "version": 3.3,
+        "version": 3.4,
         "nombre_proyecto": st.session_state.nombre_proyecto,
         "fecha_creacion": st.session_state.fecha_creacion,
         "tipo_carta": st.session_state.tipo_carta,
         "ppp": st.session_state.ppp,
+        "sangrado_activo": st.session_state.sangrado_activo,
+        "sangrado_mm": st.session_state.sangrado_mm,
         "offset_porcentaje": st.session_state.offset_porcentaje,
     }
 
@@ -328,7 +382,7 @@ with header_help:
         except OSError:
             st.error("No se ha podido cargar la guía de ayuda.")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([3.2, 2.0, 2.0])
 with col1:
     opciones_tipo = list(MEDIDAS_CARTAS.keys())
     indice_tipo = opciones_tipo.index(st.session_state.tipo_carta)
@@ -337,7 +391,6 @@ with col1:
         opciones_tipo,
         index=indice_tipo,
     )
-
 with col2:
     opciones_ppp = list(PPP_OPCIONES.keys())
     etiqueta_ppp = next(
@@ -350,16 +403,51 @@ with col2:
         index=opciones_ppp.index(etiqueta_ppp),
     )
     st.session_state.ppp = PPP_OPCIONES[etiqueta_ppp]
+with col3:
+    st.session_state.sangrado_activo = st.checkbox(
+        "La imagen incluye sangrado",
+        value=st.session_state.sangrado_activo,
+        help="Marca esto si tus cartas incluyen sangrado. El programa lo conservará si lo marcas.",
+    )
+
+if st.session_state.sangrado_activo:
+    st.session_state.sangrado_mm = st.number_input(
+        "Sangrado por lado (mm)",
+        min_value=0.1,
+        max_value=20.0,
+        value=float(st.session_state.sangrado_mm),
+        step=0.5,
+        format="%.1f",
+        help="El valor se aplica por cada lado de la carta. 3 mm es habitual en muchos flujos de impresión, pero utiliza el valor solicitado por tu imprenta.",
+    )
+else:
+    st.session_state.sangrado_mm = 3.0
 
 px_ancho, px_alto = dimensiones_px(
     st.session_state.tipo_carta,
     st.session_state.ppp,
+    st.session_state.sangrado_activo,
+    st.session_state.sangrado_mm,
 )
 
-cm_ancho, cm_alto = MEDIDAS_CARTAS[st.session_state.tipo_carta]
-st.caption(
-    f"Salida: {cm_ancho:.2f} × {cm_alto:.2f} cm · {px_ancho} × {px_alto} px"
+corte_ancho_mm, corte_alto_mm, total_ancho_mm, total_alto_mm, bleed_mm = dimensiones_mm(
+    st.session_state.tipo_carta,
+    st.session_state.sangrado_activo,
+    st.session_state.sangrado_mm,
 )
+
+if st.session_state.sangrado_activo:
+    st.caption(
+        f"Corte: {corte_ancho_mm/10:.2f} × {corte_alto_mm/10:.2f} cm · "
+        f"canvas con {bleed_mm:.1f} mm de sangrado por lado: "
+        f"{total_ancho_mm/10:.2f} × {total_alto_mm/10:.2f} cm · "
+        f"{px_ancho} × {px_alto} px"
+    )
+else:
+    st.caption(
+        f"Canvas: {corte_ancho_mm/10:.2f} × {corte_alto_mm/10:.2f} cm · "
+        f"{px_ancho} × {px_alto} px"
+    )
 
 
 # ============================================================
@@ -425,6 +513,15 @@ with st.expander("1 · Proyecto", expanded=False):
                 )
                 st.session_state.tipo_carta = tipo
                 st.session_state.ppp = ppp
+                st.session_state.sangrado_activo = bool(
+                    datos.get("sangrado_activo", False)
+                )
+                try:
+                    st.session_state.sangrado_mm = max(
+                        0.1, min(20.0, float(datos.get("sangrado_mm", 3.0)))
+                    )
+                except (TypeError, ValueError):
+                    st.session_state.sangrado_mm = 3.0
                 st.session_state.offset_porcentaje = offset
                 st.session_state.fecha_creacion = datos.get(
                     "fecha_creacion",
@@ -614,6 +711,10 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                         f"Tanda: {numero_tanda} / {total_tandas}",
                         f"Tamaño: {st.session_state.tipo_carta}",
                         f"Resolución: {st.session_state.ppp} PPP",
+                        f"Tamaño de corte: {corte_ancho_mm/10:.2f} × {corte_alto_mm/10:.2f} cm",
+                        f"Sangrado incluido en la imagen: {'sí' if st.session_state.sangrado_activo else 'no'}",
+                        (f"Sangrado por lado: {bleed_mm:.1f} mm" if st.session_state.sangrado_activo else ""),
+                        f"Canvas de salida: {total_ancho_mm/10:.2f} × {total_alto_mm/10:.2f} cm",
                         f"Salida: {px_ancho} × {px_alto} px",
                         f"Desplazamiento: {st.session_state.offset_porcentaje:+.1f}%",
                         "Ampliación: Lanczos + enfoque suave solo cuando el canvas recortado queda por debajo de la salida.",
@@ -740,6 +841,11 @@ with st.expander("3 · Ajustar recorte", expanded=False):
         "Si la carta que subes no tiene el tamaño o proporción exacta lo ajustamos, "
         "pero si quieres puedes definir un recorte preciso que se aplicará a todas las cartas."
     )
+    if st.session_state.sangrado_activo:
+        st.info(
+            f"El canvas incluye {bleed_mm:.1f} mm de sangrado por cada lado. "
+            "El programa no crea ese sangrado: presupone que la imagen original ya lo contiene."
+        )
     st.caption(
         "Las ampliaciones son automáticas y conservadoras: Lanczos + enfoque suave, solo cuando el canvas recortado no alcanza la salida."
     )
@@ -799,6 +905,15 @@ with st.expander("3 · Ajustar recorte", expanded=False):
                 st.session_state.offset_porcentaje,
             )
             original_marcada = preview_con_box(img_ref, box)
+            resultado_marcado = preview_resultado(
+                previa,
+                bleed_mm,
+                st.session_state.ppp,
+                st.session_state.sangrado_activo,
+            )
+
+            if st.session_state.sangrado_activo:
+                st.caption("En la vista del resultado, la línea amarilla marca el tamaño de corte; el exterior corresponde al sangrado.")
 
             col1, col2 = st.columns(2)
             with col1:
@@ -809,7 +924,7 @@ with st.expander("3 · Ajustar recorte", expanded=False):
                 )
             with col2:
                 st.image(
-                    previa,
+                    resultado_marcado,
                     caption="Resultado",
                     use_container_width=True,
                 )
@@ -834,5 +949,6 @@ with st.expander("3 · Ajustar recorte", expanded=False):
 
 st.caption(
     f"{st.session_state.tipo_carta} · {st.session_state.ppp} PPP · "
+    f"canvas {px_ancho} × {px_alto} px · "
     f"recorte {st.session_state.offset_porcentaje:+.1f}%"
 )
