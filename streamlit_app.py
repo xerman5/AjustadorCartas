@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFilter, ImageOps, UnidentifiedImageError
 
 from uploader_component import batch_uploader
 
@@ -174,10 +174,57 @@ def calcular_box_recorte(img_w, img_h, target_w, target_h, offset_p):
 
 
 def recortar_y_redimensionar(img, target_w, target_h, offset_p):
-    box, eje = calcular_box_recorte(img.width, img.height, target_w, target_h, offset_p)
+    """
+    Recorta primero al canvas definitivo y decide después cómo redimensionar.
+
+    - Si el canvas recortado es igual o mayor al destino: reducción con LANCZOS.
+    - Si el canvas recortado es menor: ampliación con LANCZOS + enfoque muy suave.
+
+    La decisión de ampliar se toma sobre el área que queda después del recorte,
+    no sobre las dimensiones originales de la fotografía.
+    """
+    box, eje = calcular_box_recorte(
+        img.width, img.height, target_w, target_h, offset_p
+    )
     recortada = img.crop(box)
-    final = recortada.resize((target_w, target_h), Image.Resampling.LANCZOS)
-    return final, box, eje
+
+    crop_w, crop_h = recortada.size
+
+    # Si el canvas recortado ya coincide exactamente con la salida,
+    # no hacemos absolutamente ningún procesado de redimensionado/enfoque.
+    if crop_w == target_w and crop_h == target_h:
+        final = recortada
+        escala = 1.0
+        operacion = "sin_redimensionado"
+
+    else:
+        escala = min(crop_w / target_w, crop_h / target_h)
+
+        if escala > 1.0:
+            # Hay más resolución de la necesaria: reducir con LANCZOS.
+            final = recortada.resize(
+                (target_w, target_h),
+                Image.Resampling.LANCZOS,
+            )
+            operacion = "reduccion_lanczos"
+
+        else:
+            # Ampliación. Primero LANCZOS y después un enfoque
+            # deliberadamente conservador para evitar halos en texto y bordes.
+            ampliada = recortada.resize(
+                (target_w, target_h),
+                Image.Resampling.LANCZOS,
+            )
+            final = ampliada.filter(
+                ImageFilter.UnsharpMask(
+                    radius=0.6,
+                    percent=35,
+                    threshold=4,
+                )
+            )
+            operacion = "ampliacion_lanczos_unsharp_suave"
+
+    return final, box, eje, operacion, escala
 
 
 def preview_con_box(img, box):
@@ -231,7 +278,7 @@ def guardar_upload(uploaded_file, destino: Path):
 
 def proyecto_json():
     return {
-        "version": 2,
+        "version": 3.1,
         "nombre_proyecto": st.session_state.nombre_proyecto,
         "fecha_creacion": st.session_state.fecha_creacion,
         "tipo_carta": st.session_state.tipo_carta,
@@ -534,6 +581,7 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                         f"Resolución: {st.session_state.ppp} PPP",
                         f"Salida: {px_ancho} × {px_alto} px",
                         f"Desplazamiento: {st.session_state.offset_porcentaje:+.1f}%",
+                        "Ampliación: Lanczos + enfoque suave solo cuando el canvas recortado queda por debajo de la salida.",
                         "",
                     ]
 
@@ -562,7 +610,7 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                                 nombres_usados.add(nombre_original.lower())
 
                                 img = cargar_imagen(item["path"])
-                                final, _, _ = recortar_y_redimensionar(
+                                final, box, _, operacion, escala = recortar_y_redimensionar(
                                     img,
                                     px_ancho,
                                     px_alto,
@@ -589,6 +637,10 @@ with st.expander("2 · Subir fotos en tandas", expanded=True):
                                         optimize=True,
                                         dpi=(st.session_state.ppp, st.session_state.ppp),
                                     )
+
+                                informe.append(
+                                    f"{nombre_original} · canvas {int(round(box[2]-box[0]))}×{int(round(box[3]-box[1]))} px · {operacion}"
+                                )
 
                                 # El nombre dentro del ZIP es EXACTAMENTE el original.
                                 zf.writestr(nombre_original, out.getvalue())
@@ -646,6 +698,9 @@ with st.expander("3 · Ajustar recorte", expanded=False):
         "Si la carta que subes no tiene el tamaño o proporción exacta lo ajustamos, "
         "pero si quieres puedes definir un recorte preciso que se aplicará a todas las cartas."
     )
+    st.caption(
+        "Las ampliaciones son automáticas y conservadoras: Lanczos + enfoque suave, solo cuando el canvas recortado no alcanza la salida."
+    )
 
     ref_file = st.file_uploader(
         f"Subir una foto de referencia · máximo {MAX_MB_POR_FOTO} MB",
@@ -667,7 +722,7 @@ with st.expander("3 · Ajustar recorte", expanded=False):
     if st.session_state.ref_path:
         try:
             img_ref = cargar_imagen(st.session_state.ref_path)
-            _, _, eje = recortar_y_redimensionar(
+            _, _, eje, _, _ = recortar_y_redimensionar(
                 img_ref,
                 px_ancho,
                 px_alto,
@@ -695,7 +750,7 @@ with st.expander("3 · Ajustar recorte", expanded=False):
                 key="offset_slider",
             )
 
-            previa, box, _ = recortar_y_redimensionar(
+            previa, box, _, _, _ = recortar_y_redimensionar(
                 img_ref,
                 px_ancho,
                 px_alto,
