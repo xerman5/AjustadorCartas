@@ -7,7 +7,9 @@ import zipfile
 st.set_page_config(page_title="Procesador Profesional de Cartas", page_icon="🃏", layout="centered")
 
 st.title("🃏 Procesador de Cartas por Lote")
-st.write("Sube todas tus imágenes de golpe. El sistema las adaptará y te devolverá un **archivo ZIP** con tus cartas listas y un **informe de procesamiento**.")
+
+# 📢 MENSAJE PRINCIPAL TRANSPARENTE Y DIRECTO
+st.write("Sube **hasta 18 imágenes** simultáneamente para ajustarlas al tamaño exacto de impresión de cartas. El sistema adaptará las proporciones, centrará el contenido y te generará un único archivo comprimido **ZIP** junto a un informe detallado.")
 
 # --- DICCIONARIO DE MEDIDAS (Ancho x Alto en centímetros) ---
 MEDIDAS_CARTAS = {
@@ -44,16 +46,16 @@ st.info(f"📐 El objetivo de impresión es: **{px_ancho} x {px_alto} píxeles**
 
 # --- ZONA DE ARRASTRE DE ARCHIVOS ---
 archivos_subidos = st.file_uploader(
-    "3. Arrastra tus imágenes o selecciónalas todas juntas (JPG, JPEG, PNG)", 
+    "3. Arrastra tus imágenes o selecciónalas todas juntas (Máximo 18 archivos - JPG, JPEG, PNG)", 
     type=["jpg", "jpeg", "png"], 
     accept_multiple_files=True
 )
 
 # --- PROCESAMIENTO POR LOTE ---
 if archivos_subidos:
-    # NUEVA VALIDACIÓN: Limitar a un máximo de 15 imágenes
-    if len(archivos_subidos) > 15:
-        st.error(f"⚠️ No se permite subir más de 15 fotos de golpe (Has subido {len(archivos_subidos)}). Estamos en pruebas, por favor sube pequeños grupos.")
+    # COMPROBACIÓN DEL LÍMITE DE SEGURIDAD
+    if len(archivos_subidos) > 18:
+        st.error(f"⚠️ No se permite procesar más de 18 fotos simultáneamente (Has intentado subir {len(archivos_subidos)}). Por favor, reduce el grupo de imágenes y vuelve a intentarlo.")
     else:
         # Creamos un contenedor de bytes para armar el ZIP en memoria sin guardar nada en el servidor
         zip_buffer = io.BytesIO()
